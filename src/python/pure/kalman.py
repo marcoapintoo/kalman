@@ -20,10 +20,48 @@ def _inv(X):
     return np.linalg.pinv(X)
 
 def _mvn_probability(x, mean, cov):
-    return np.exp(-0.5 * _dot((x - mean).T, _inv(cov), (x - mean))) / np.sqrt(2, np.pi * np.linalg.det(cov))
+    return np.exp(-0.5 * _dot((x - mean).T, _inv(cov), (x - mean))) / np.sqrt(2 * np.pi * np.linalg.det(cov))
 
 def _mvn_logprobability(x, mean, cov):
     return (-0.5 * _dot((x - mean).T, _inv(cov), (x - mean))) - 0.5 * np.log(2 * np.pi) - 0.5 * np.log(np.linalg.det(cov))
+
+def test_mvn_probability():
+    xs = np.linspace(-5, 5, 101)
+    dxs = xs[1] - xs[0]
+    cdf = 0
+    for x in xs:
+        cdf += _mvn_probability(np.array([[x]]), mean=np.array([[0]]), cov=np.array([[1]])) * dxs
+    assert np.abs(cdf - 1) < 1e-3, "Bad integration!"
+    cdf = 0
+    for x in xs:
+        cdf += _mvn_probability(np.array([[x]]), mean=np.array([[0]]), cov=np.array([[1]]))
+    xs = np.linspace(-5, 5, 41)
+    dxs = xs[1] - xs[0]
+    cdf = 0
+    dxs = (dxs * dxs * 0.4)
+    for x in xs:
+        for y in xs:
+            cdf += _mvn_probability(np.array([[x], [y]]), mean=np.array([[0], [0]]), cov=np.array([[1, 0], [0, 1]])) * dxs
+            #print(
+            #"    ", dxs ** 2, _mvn_probability(np.array([[x], [y]]), mean=np.array([[0], [0]]), cov=np.array([[1, 0], [0, 1]])) * dxs * dxs
+            #, file=sys.stderr)
+    assert np.abs(cdf - 1) < 1e-2, "Bad integration!"
+
+def test_mvn_logprobability():
+    xs = np.linspace(-5, 5, 101)
+    dxs = xs[1] - xs[0]
+    cdf = 0
+    for x in xs:
+        cdf += np.exp(_mvn_logprobability(x, mean=np.array([0]), cov=np.array([[1]]))) * dxs
+    assert np.abs(cdf - 1) < 1e-3, "Bad integration!"
+    xs = np.linspace(-5, 5, 41)
+    dxs = xs[1] - xs[0]
+    dxs = (dxs * dxs * 0.4)
+    cdf = 0
+    for x in xs:
+        for y in xs:
+            cdf += np.exp(_mvn_logprobability(np.array([[x], [y]]), mean=np.array([[0], [0]]), cov=np.array([[1, 0], [0, 1]]))) * dxs
+    assert np.abs(cdf - 1) < 1e-2, "Bad integration!"
 
 def _mvn_sample(mean, cov):
     return scipy.stats.multivariate_normal.rvs(mean=mean.ravel(), cov=cov).reshape(mean.shape)
@@ -196,18 +234,18 @@ class SSMParameters:
         self.R = None
         self.X0 = None
         self.P0 = None
-        self.o = 0
-        self.l = 0
+        self.obs_dim = -1
+        self.lat_dim = -1
     
-    def set_dimensions(self, o, l):
-        self.o = o
-        self.l = l
+    def set_dimensions(self, obs_dim, lat_dim):
+        self.obs_dim = obs_dim
+        self.lat_dim = lat_dim
     
     def latent_signal_dimension(self):
-        return self.l
+        return self.lat_dim
 
     def observable_signal_dimension(self):
-        return self.o
+        return self.obs_dim
     
     def show(self):
         print(self)
@@ -219,16 +257,16 @@ class SSMParameters:
         print(" Initial latent var-covar matrix: ", self.P0)
 
     def random_initialize(self, init_F=True, init_H=True, init_Q=True, init_R=True, init_X0=True, init_P0=True):
-        if self.l is None:
+        if self.lat_dim < 0:
             raise ValueError("Latent signal dimension is unset!")
-        if self.o is None:
+        if self.obs_dim < 0:
             raise ValueError("Observable signal dimension is unset!")
-        if init_F: self.F = __create_noised_ones(self.l, self.l)
-        if init_Q: self.Q = __create_noised_diag(self.l, self.l)
-        if init_X0: self.X0 = __create_noised_ones(self.l, 1)
-        if init_P0: self.P0 = __create_noised_diag(self.l, self.l)
-        if init_H: self.H = __create_noised_ones(self.o, self.l)
-        if init_R: self.R = __create_noised_diag(self.o, self.o)
+        if init_F: self.F = __create_noised_ones(self.lat_dim, self.lat_dim)
+        if init_Q: self.Q = __create_noised_diag(self.lat_dim, self.lat_dim)
+        if init_X0: self.X0 = __create_noised_ones(self.lat_dim, 1)
+        if init_P0: self.P0 = __create_noised_diag(self.lat_dim, self.lat_dim)
+        if init_H: self.H = __create_noised_ones(self.obs_dim, self.lat_dim)
+        if init_R: self.R = __create_noised_diag(self.obs_dim, self.obs_dim)
     
     def estimate_error(self, Y):
         """
@@ -299,6 +337,7 @@ def test_simulations_params():
 class SSMEstimated:
     def __init__(self):
         self.X = None
+        self.Y = None
         self.P = None
         self.ACV1 = None
     
@@ -308,13 +347,19 @@ class SSMEstimated:
     
     def autocovariance(self): return self.ACV1
     
-    def init(self, dim, length, fill_ACV=False):
-        self.X = _zero_matrix(dim, length)
-        self.P = _zero_cube(dim, dim, length)
+    def init(self, dimX, dimY, length, fill_ACV=False):
+        self.X = _zero_matrix(dimX, length)
+        self.Y = _zero_matrix(dimY, length)
+        self.P = _zero_cube(dimX, dimX, length)
         if fill_ACV:
-            self.ACV1 = _zero_cube(dim, dim, length - 1)
+            self.ACV1 = _zero_cube(dimX, dimX, length - 1)
 
 
+def _predict_expected_ssm(H, Xpred):
+    Ypred = _zero_matrix(_nrows(H), _ncols(Xpred))
+    for t in range(_ncols(Xpred)):
+        _set_col(Ypred, t, _dot(H, _col(Xpred, t)))
+    return Ypred
 
 #####################################################################
 # Kalman Filter
@@ -333,17 +378,13 @@ class KalmanFilter:
     
     def T(self): return self.Y().shape[-1]
     
-    def o(self): return self.parameters.o
+    def obs_dim(self): return self.parameters.obs_dim
     
-    def obs_dim(self): return self.parameters.o
+    def set_obs_dim(self, v): self.parameters.obs_dim = v
     
-    def set_obs_dim(self, v): self.parameters.o = v
+    def lat_dim(self): return self.parameters.lat_dim
     
-    def l(self): return self.parameters.l
-    
-    def latent_dim(self): return self.parameters.l
-    
-    def set_latent_dim(self, v): self.parameters.l = v
+    def set_lat_dim(self, v): self.parameters.lat_dim = v
 
     def F(self): return self.parameters.F
 
@@ -376,8 +417,12 @@ class KalmanFilter:
     def Xf(self): return self.filtered_estimates.X
 
     def Pf(self): return self.filtered_estimates.P
+    
+    def Yf(self): return self.filtered_estimates.Y
 
     def Xp(self): return self.predicted_estimates.X
+        
+    def Yp(self): return self.predicted_estimates.Y
 
     def Pp(self): return self.predicted_estimates.P
 
@@ -392,7 +437,7 @@ class KalmanFilter:
         return log_likelihood / (self.T() - 1)
 
     def verify_parameters(self):
-        if self.l() == 0:
+        if self.lat_dim() == 0:
             raise ValueError("Observation sequence has no samples")
 
         if not(
@@ -415,8 +460,8 @@ class KalmanFilter:
 
     def filter(self):
         self.verify_parameters()
-        self.filtered_estimates.init(self.l(), self.T())
-        self.predicted_estimates.init(self.l(), self.T())
+        self.filtered_estimates.init(self.lat_dim(), self.obs_dim(), self.T())
+        self.predicted_estimates.init(self.lat_dim(), self.obs_dim(), self.T())
         
         _set_col(self.Xp(), 0, self.X0())
         _set_slice(self.Pp(), 0, self.P0())
@@ -440,6 +485,10 @@ class KalmanFilter:
             _set_col(self.Xf(), k, _col(self.Xp(), k) + _dot(G, _col(self.Y(), k) - _dot(self.H(), _col(self.Xp(), k))))
             # Error covariance update
             _set_slice(self.Pf(), k, _slice(self.Pp(), k) - _dot(G, self.H(), _slice(self.Pp(), k)))
+        #
+        self.predicted_estimates.Y = _predict_expected_ssm(self.H(), self.predicted_estimates.X)
+        self.filtered_estimates.Y = _predict_expected_ssm(self.H(), self.filtered_estimates.X)
+
 
 def test_filter_1():
     params = __create_params_ones_kx1([-50], [10])
@@ -453,6 +502,7 @@ def test_filter_1():
     #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
 
 
+# [[export]]
 def kalman_filter(Y, F, H, Q, R, X0, P0):
     kf = KalmanFilter()
     kf.set_F(F)
@@ -463,7 +513,7 @@ def kalman_filter(Y, F, H, Q, R, X0, P0):
     kf.set_P0(P0)
     kf.set_Y(Y)
     kf.set_obs_dim(_nrows(Y))
-    kf.set_latent_dim(_nrows(X0))
+    kf.set_lat_dim(_nrows(X0))
     kf.filter()
     return kf
 
@@ -472,9 +522,25 @@ def kalman_filter_from_parameters(Y, params):
     kf.parameters = params
     kf.set_Y(Y)
     kf.set_obs_dim(_nrows(Y))
-    kf.set_latent_dim(_nrows(params.X0))
+    kf.set_lat_dim(_nrows(params.X0))
     kf.filter()
     return kf
+
+# [[export]]
+def kalman_filter_results(kf):
+    return (
+        kf.Xp(), kf.Pp(), kf.Yp(),
+        kf.Xf(), kf.Pf(), kf.Yf(),
+    )
+
+# [[export]]
+def kalman_filter_parameters(kf):
+    kf = KalmanFilter()
+    return (
+        kf.F(), kf.H(), kf.Q(), 
+        kf.R(), kf.X0(), kf.P0(),
+    )
+
 
 def test_filter_2():
     params = __create_params_ones_kx1([-50], [10])
@@ -499,8 +565,10 @@ class KalmanSmoother(KalmanFilter):
         self.smoothed_estimates = SSMEstimated()
     
     def Xs(self): return self.smoothed_estimates.X
-
+    
     def Ps(self): return self.smoothed_estimates.P
+
+    def Ys(self): return self.smoothed_estimates.Y
 
     def Cs(self): return self.smoothed_estimates.ACV1
 
@@ -517,7 +585,7 @@ class KalmanSmoother(KalmanFilter):
         if filter:
             self.filter()
         
-        self.smoothed_estimates.init(self.l(), self.T(), True)
+        self.smoothed_estimates.init(self.lat_dim(), self.obs_dim(), self.T(), True)
         
         k = self.T() - 1
         _set_col(self.Xs(), k, _col(self.Xf(), k))
@@ -536,6 +604,8 @@ class KalmanSmoother(KalmanFilter):
                 _set_slice(self.Cs(), k, _dot(_slice(self.Pf(), k + 1), _t(A)) + _dot(A_prev, _t(_slice(self.Cs(), k + 1)) - _dot(self.F(), _slice(self.Pf(), k + 1)), _t(A_prev)))
             A_prev = A
             k -= 1
+        #
+        self.smoothed_estimates.Y = _predict_expected_ssm(self.H(), self.smoothed_estimates.X)
 
 def test_smoother_1():
     params = __create_params_ones_kx1([-50], [10])
@@ -568,6 +638,7 @@ def test_smoother_2():
     #assert np.round(np.std(ks.Xp()), 2) >= np.round(np.std(ks.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
     #assert np.round(np.std(ks.Xf()), 2) >= np.round(np.std(ks.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)"
     
+# [[export]]
 def kalman_smoother(Y, F, H, Q, R, X0, P0):
     kf = KalmanSmoother()
     kf.set_F(F)
@@ -578,7 +649,7 @@ def kalman_smoother(Y, F, H, Q, R, X0, P0):
     kf.set_P0(P0)
     kf.set_Y(Y)
     kf.set_obs_dim(_nrows(Y))
-    kf.set_latent_dim(_nrows(X0))
+    kf.set_lat_dim(_nrows(X0))
     kf.smooth()
     return kf
 
@@ -587,9 +658,25 @@ def kalman_smoother_from_parameters(Y, params):
     kf.parameters = params
     kf.set_Y(Y)
     kf.set_obs_dim(_nrows(Y))
-    kf.set_latent_dim(_nrows(params.X0))
+    kf.set_lat_dim(_nrows(params.X0))
     kf.smooth()
     return kf
+
+# [[export]]
+def kalman_smoother_results(kf):
+    return (
+        kf.Xp(), kf.Pp(), kf.Yp(),
+        kf.Xf(), kf.Pf(), kf.Yf(),
+        kf.Xs(), kf.Ps(), kf.Ys(),
+    )
+
+# [[export]]
+def kalman_smoother_parameters(kf):
+    kf = KalmanSmoother()
+    return (
+        kf.F(), kf.H(), kf.Q(), 
+        kf.R(), kf.X0(), kf.P0(),
+    )
 
 def test_smoother_3():
     params = __create_params_ones_kx1([-50], [10])
@@ -612,6 +699,7 @@ def test_smoother_3():
 # EM SSM Estimator
 #####################################################################
 
+
 class ExpectationMaximizationEstimator:
     def __init__(self):
         self.parameters = None
@@ -624,23 +712,23 @@ class ExpectationMaximizationEstimator:
         self.estimate_P0 = True
         self.loglikelihood_record = []
         self.max_iterations = 10
-        self.min_iterations = 10
-        self.iteration_tolerance = 0.01
+        self.min_iterations = 1
+        self.min_improvement = 0.01
     
     #
     # Trick in C++ for optional references
     # static double _dummy_foobar;
     # void foo(double &bar, double &foobar = _dummy_foobar)
     #
-    def set_parameters(self, Y, parameters=None, est_F=True, est_H=True, est_Q=True, est_R=True, est_X0=True, est_P0=True, latent_dim=None):
+    def set_parameters(self, Y, parameters=None, est_F=True, est_H=True, est_Q=True, est_R=True, est_X0=True, est_P0=True, lat_dim=None):
         if parameters is not None:
             self.parameters = parameters
         else:
-            if latent_dim is None:
-                raise ValueError("latent_dim unset!")
+            if lat_dim is None:
+                raise ValueError("lat_dim unset!")
             self.parameters = SSMParameters()
-            self.parameters.o = _ncols(Y)
-            self.parameters.l = latent_dim
+            self.parameters.obs_dim = _ncols(Y)
+            self.parameters.lat_dim = lat_dim
             self.parameters.random_initialize()
         self.Y = Y
         self.estimate_F = est_F
@@ -692,29 +780,123 @@ class ExpectationMaximizationEstimator:
         self.estimation_iteration()
         for i in range(self.max_iterations):
             self.estimation_iteration()
-            unsufficient_increment = self.loglikelihood_record[-1] - self.loglikelihood_record[-2] <= self.iteration_tolerance
+            unsufficient_increment = self.loglikelihood_record[-1] - self.loglikelihood_record[-2] <= self.min_improvement
             if unsufficient_increment and i > self.min_iterations:
                 break
         ks = kalman_smoother_from_parameters(self.Y, self.parameters)
         self.loglikelihood_record.append(ks.loglikelihood())
+    
+    def smoother(self):
+        return kalman_smoother_from_parameters(self.Y, self.parameters)
 
 def test_expectation_maximization_1():
     params_orig = __create_params_ones_kx1([-50], [10])
     params = __create_params_ones_kx1([-50], [10])
-    params.X0[0, 0] += 0.1
-    params.H[0, 0] -= 0.1
-    params.show()
+    params.X0[0, 0] += 1
+    params.H[0, 0] -= 0.3
+    params.F[0, 0] -= 0.1
+    #params.show()
     x, y = params.simulate(100)
     kf = ExpectationMaximizationEstimator()
     kf.set_parameters(y, params)
     kf.estimate_parameters()
-    kf.parameters.show()
-    params.show()
-    params_orig.show()
+    #kf.parameters.show()
+    #params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
     #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
     #assert np.round(np.std(kf.Xf()), 2) >= np.round(np.std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)"
 
+def test_expectation_maximization_2():
+    params_orig = __create_params_ones_kx1([-50], [10])
+    params = __create_params_ones_kx1([-50], [10])
+    #params.X0[0, 0] += 1
+    #params.H[0, 0] -= 0.3
+    #params.F[0, 0] -= 0.1
+    #params.show()
+    x, y = params.simulate(100)
+    kf = ExpectationMaximizationEstimator()
+    kf.set_parameters(y, params)
+    kf.estimate_parameters()
+    #kf.parameters.show()
+    #params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
+    #assert np.round(np.std(kf.Xf()), 2) >= np.round(np.std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)"
 
+# [[export]]
+def estimate_using_em(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X00=None, P00=None, min_iterations=1, max_iterations=10, min_improvement=0.01, lat_dim=None):
+    estimator = ExpectationMaximizationEstimator()
+    estimator.Y = Y
+    estimator.estimate_F = "F" in estimates
+    estimator.estimate_H = "H" in estimates
+    estimator.estimate_Q = "Q" in estimates
+    estimator.estimate_R = "R" in estimates
+    estimator.estimate_X0 = "X0" in estimates
+    estimator.estimate_P0 = "P0" in estimates
+    estimator.parameters = SSMParameters()
+    estimator.parameters.F = F0
+    if F0 is not None:
+        estimator.parameters.lat_dim = _nrows(F0)
+    estimator.parameters.H = H0
+    if H0 is not None:
+        estimator.parameters.lat_dim = _ncols(H0)
+    estimator.parameters.Q = Q0
+    if Q0 is not None:
+        estimator.parameters.lat_dim = _ncols(Q0)
+    estimator.parameters.R = R0
+    estimator.parameters.X0 = X00
+    if X00 is not None:
+        estimator.parameters.lat_dim = _nrows(X00)
+    estimator.parameters.P0 = P00
+    if P00 is not None:
+        estimator.parameters.lat_dim = _ncols(P00)
+    if lat_dim is not None:
+        estimator.parameters.lat_dim = lat_dim
+    estimator.parameters.obs_dim = _nrows(Y)
+    estimator.parameters.obs_dim = _nrows(Y)
+    estimator.parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
+    estimator.estimate_parameters()
+    ks = estimator.smoother()
+    ks.smooth()
+    return ks, estimator.loglikelihood_record
+
+
+def test_expectation_maximization_3():
+    params = __create_params_ones_kx1([-50], [10])
+    x, y = params.simulate(100)
+    ks, records = estimate_using_em(y,
+        estimates="F H Q R X0 P0",
+        F0=params.F, H0=params.H, Q0=params.Q, R0=params.R, X00=params.X0, P00=params.P0,
+        min_iterations=1, max_iterations=10, min_improvement=0.01, lat_dim=None)
+    neoparams = ks.parameters
+    print(records)
+    neoparams.show()
+    params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+    
 #####################################################################
 # Heuristic SSM Estimator
 #####################################################################
@@ -723,7 +905,7 @@ def test_expectation_maximization_1():
 if __name__ == "__main__":
     import pytest
     #pytest.main(sys.argv[0])
-    test_expectation_maximization_1()
+    test_expectation_maximization_3()
 
 # For testing run
 # pip install pytest
