@@ -699,7 +699,6 @@ def test_smoother_3():
 # EM SSM Estimator
 #####################################################################
 
-
 class ExpectationMaximizationEstimator:
     def __init__(self):
         self.parameters = None
@@ -880,7 +879,6 @@ def estimate_using_em(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X00=N
     ks.smooth()
     return ks, estimator.loglikelihood_record
 
-
 def test_expectation_maximization_3():
     params = __create_params_ones_kx1([-50], [10])
     x, y = params.simulate(100)
@@ -900,6 +898,139 @@ def test_expectation_maximization_3():
 #####################################################################
 # Heuristic SSM Estimator
 #####################################################################
+
+class HeuristicEstimatorParticle:
+    def __init__(self):
+        self.params = None
+        self.metric = -1e100
+        self.best_params = None
+        self.best_metric = -1e100
+    
+    # Assume that any param not null is fixed
+    def init(self, obs_dim, lat_dim, F0=None, H0=None, Q0=None, R0=None, X00=None, P00=None):
+        self.params = SSMParameters()
+        self.params.F = F0
+        #if F0 is not None:
+        #    self.params.lat_dim = _nrows(F0)
+        self.params.H = H0
+        #if H0 is not None:
+        #    self.params.lat_dim = _ncols(H0)
+        self.params.Q = Q0
+        #if Q0 is not None:
+        #    self.params.lat_dim = _ncols(Q0)
+        self.params.R = R0
+        self.params.X0 = X00
+        #if X00 is not None:
+        #    self.params.lat_dim = _nrows(X00)
+        self.params.P0 = P00
+        #if P00 is not None:
+        #    self.params.lat_dim = _ncols(P00)
+        #if lat_dim is not None:
+        #    self.params.lat_dim = lat_dim
+        self.params.lat_dim = lat_dim
+        self.params.obs_dim = obs_dim
+        self.params.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
+        self.best_params = self.params
+    
+    def init_with_parameters(self, obs_dim, parameters=None, est_F=True, est_H=True, est_Q=True, est_R=True, est_X0=True, est_P0=True, lat_dim=None):
+        if parameters is not None:
+            self.params = parameters
+        else:
+            if lat_dim is None:
+                raise ValueError("lat_dim unset!")
+            self.params = SSMParameters()
+            self.params.lat_dim = lat_dim
+            self.params.random_initialize()
+        self.params.obs_dim = obs_dim
+        self.params.random_initialize(est_F, est_H, est_Q, est_R, est_X0, est_P0)
+        self.best_params = self.params
+
+    def evaluate(self, Y):
+        ks = kalman_smoother_from_parameters(Y, self.params)
+        self.metric = ks.loglikelihood()
+        if self.metric > self.best_metric:
+            self.best_metric = self.metric
+            self.params = self.best_params
+        
+    def move(self, best_particle, est_F=True, est_H=True, est_Q=True, est_R=True, est_X0=True, est_P0=True):
+        move_to_self_best = 2 * np.random.uniform()
+        move_to_global_best = 2 * np.random.uniform()
+        if est_F:
+            self.params.F += move_to_self_best * (self.best_params.F - self.params.F) + move_to_global_best * (best_particle.best_params.F - self.params.F)
+        if est_H:
+            self.params.H += move_to_self_best * (self.best_params.H - self.params.H) + move_to_global_best * (best_particle.best_params.H - self.params.H)
+        if est_Q:
+            self.params.Q += move_to_self_best * (self.best_params.Q - self.params.Q) + move_to_global_best * (best_particle.best_params.Q - self.params.Q)
+        if est_R:
+            self.params.R += move_to_self_best * (self.best_params.R - self.params.R) + move_to_global_best * (best_particle.best_params.R - self.params.R)
+        if est_X0:
+            self.params.X0 += move_to_self_best * (self.best_params.X0 - self.params.X0) + move_to_global_best * (best_particle.best_params.X0 - self.params.X0)
+        if est_P0:
+            self.params.P0 += move_to_self_best * (self.best_params.P0 - self.params.P0) + move_to_global_best * (best_particle.best_params.P0 - self.params.P0)
+    
+    def copy_best_from(self, other):
+        if other.best_metric > self.metric:
+            self.metric = other.best_metric
+            self.best_metric = other.best_metric
+            self.params = other.best_params
+            self.best_params = other.best_params
+
+class HeuristicEstimator:
+    def __init__(self):
+        self.parameters = None
+        self.Y = None
+        self.estimate_F = True
+        self.estimate_H = True
+        self.estimate_Q = True
+        self.estimate_R = True
+        self.estimate_X0 = True
+        self.estimate_P0 = True
+        self.loglikelihood_record = []
+        self.max_iterations = 10
+        self.min_iterations = 1
+        self.min_improvement = 0.01
+        self.sample_size = 100
+        self.population_size = 20
+        self.particles = []
+        self.best_particle = None
+
+    def set_parameters(self, Y, parameters=None, est_F=True, est_H=True, est_Q=True, est_R=True, est_X0=True, est_P0=True, lat_dim=None):
+        #
+        for i in range(self.population_size):
+            self.particles[i] = HeuristicEstimatorParticle()
+            self.particles[i].init_with_parameters(_nrows(Y), parameters, est_F, est_H, est_Q, est_R, est_X0, est_P0, lat_dim)
+        self.best_particle = HeuristicEstimatorParticle()
+        self.best_particle.copy_best_from(self.particles[0])
+        self.parameters = self.best_particle.best_params
+        #
+        self.Y = Y
+        self.estimate_F = est_F
+        self.estimate_H = est_H
+        self.estimate_Q = est_Q
+        self.estimate_R = est_R
+        self.estimate_X0 = est_X0
+        self.estimate_P0 = est_P0
+
+    def estimation_iteration_heuristic(self):
+        for i in range(self.population_size):
+            self.particles[i].evaluate(self.Y)
+            self.best_particle.copy_best_from(self.particles[i])
+            self.particles[i].move(self.best_particle, self.estimate_F, self.estimate_H, self.estimate_Q, self.estimate_R, self.estimate_X0, self.estimate_P0)
+        self.loglikelihood_record.append(self.best_particle.best_metric)
+        self.parameters = self.best_particle.best_params
+    
+    def estimate_parameters(self):
+        self.estimation_iteration_heuristic()
+        for i in range(self.max_iterations):
+            self.estimation_iteration_heuristic()
+            unsufficient_increment = self.loglikelihood_record[-1] - self.loglikelihood_record[-2] <= self.min_improvement
+            if unsufficient_increment and i > self.min_iterations:
+                break
+        ks = kalman_smoother_from_parameters(self.Y, self.parameters)
+        self.loglikelihood_record.append(ks.loglikelihood())
+    
+    def smoother(self):
+        return kalman_smoother_from_parameters(self.Y, self.parameters)
 
 
 if __name__ == "__main__":
