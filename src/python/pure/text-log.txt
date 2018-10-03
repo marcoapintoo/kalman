@@ -1,0 +1,15 @@
+============================= test session starts =============================
+platform win32 -- Python 3.6.5, pytest-3.5.1, py-1.5.3, pluggy-0.6.0
+rootdir: D:\Marco\Projects\mpinto.neokalman\src\python\pure, inifile:
+plugins: remotedata-0.2.1, openfiles-0.3.0, doctestplus-0.1.3, arraydiff-0.2
+collected 19 items
+
+kalman.py ...................                                            [100%]
+
+============================== warnings summary ===============================
+kalman.py::test_simulations_params
+  D:\ProgramData\Anaconda3\lib\site-packages\scipy\stats\_multivariate.py:652: RuntimeWarning: covariance is not symmetric positive-semidefinite.
+    out = random_state.multivariate_normal(mean, cov, size)
+
+-- Docs: http://doc.pytest.org/en/latest/warnings.html
+==================== 19 passed, 1 warnings in 9.70 seconds ====================
