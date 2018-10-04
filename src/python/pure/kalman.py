@@ -101,14 +101,17 @@ def test_covariance_matrix_estimation():
 # Math cross-platform functions
 #####################################################################
 
+def _create_noised_values(L, M):
+    return np.random.randn(L, M)
+
 def _create_noised_ones(L, M):
-    return np.ones((L, M), dtype="f") + 0.05 * np.random.random((L, M))
+    return np.ones((L, M), dtype="f") + 0.05 * np.random.randn(L, M)
 
 def _create_noised_zeros(L, M):
-    return np.zeros((L, M), dtype="f") + 0.05 * np.random.random((L, M))
+    return np.zeros((L, M), dtype="f") + 0.05 * np.random.randn(L, M)
 
 def _create_noised_diag(L, M):
-    return np.eye(L, M, dtype="f") + 0.05 * np.random.random((L, M))
+    return np.eye(L, M, dtype="f") + 0.05 * np.random.randn(L, M)
 
 def test_create_noised_ones():
     m = _create_noised_ones(1, 1)
@@ -176,7 +179,7 @@ def _set_diag_values_positive(X):
             X[i, j] = np.abs(X[i, j])
 
 def _subsample(Y, sample_size):
-    if sample_size >= Y.shape[1]: return Y
+    if sample_size >= Y.shape[1]: return 0, Y
     i0 = np.random.random_integers(0, Y.shape[1] - sample_size - 1)
     return i0, Y[:, i0: i0 + sample_size]
 
@@ -251,7 +254,7 @@ def _set_row(X, k, v):
     X[k, :] = v
 
 def _set_col(X, k, v):
-    X[:, k] = v
+    X[:, k] = v.ravel()
 
 def _set_slice(X, k, v):
     X[:, :, k] = v
@@ -335,7 +338,7 @@ class SSMParameters:
             raise ValueError("Observable signal dimension is unset!")
         if init_F: self.F = _create_noised_ones(self.lat_dim, self.lat_dim)
         if init_Q: self.Q = _create_noised_diag(self.lat_dim, self.lat_dim)
-        if init_X0: self.X0 = _create_noised_ones(self.lat_dim, 1)
+        if init_X0: self.X0 = _create_noised_values(self.lat_dim, 1)
         if init_P0: self.P0 = _create_noised_diag(self.lat_dim, self.lat_dim)
         if init_H: self.H = _create_noised_ones(self.obs_dim, self.lat_dim)
         if init_R: self.R = _create_noised_diag(self.obs_dim, self.obs_dim)
@@ -400,6 +403,98 @@ class SSMParameters:
         self.obs_dim = p.obs_dim
         self.lat_dim = p.lat_dim
         return p
+    
+    # Evaluation
+
+    def _penalize_low_std_to_mean_ratio(self, X0, P0):
+        """
+         We expect that the variance must be
+         low compared with the mean:
+           Mean      Std       penalty
+            1         0            undefined
+            1         1            100 = 100 * std/mean
+            10        1            10 = 100 * std/mean
+            20        1            5 = 100 * std/mean
+            50        1            2 = 100 * std/mean
+        """
+        mean = np.abs(np.mean(X0))
+        std = np.mean(P0)
+        if np.abs(mean) < 1e-3: return 0
+        return 100 * std/mean
+        
+    def _penalize_low_variance(self, X):
+        """
+        penalty RULE:
+        0.0001          10
+        0.001           1
+        0.01            0.1
+        0.1             0.01
+        1               0.001
+        10              0.0001
+        """
+        #return 10 ** (-np.log10(np.sum(X) + 1e-100) - 2.0)
+        return 0.1/ ((X / (X.mean(axis=1) ** 2)).max())
+        #return 0.001/np.sum(X)
+    
+    def _penalize_inestable_system(self, X):
+        """
+        penalty
+        eigenvalues of X    penalty
+        1   1   1           ~ 27
+        0.1 0.1 0.1         ~ 0.08
+        0.5 0.9 0.5         ~ 8
+        """
+        return np.sum(np.abs(np.linalg.eig(X)[0])) ** 3
+
+    def _penalize_mean_squared_error(self, Y, ks):
+        return _mean_squared_error(Y, ks.Ys())
+    
+    def _penalize_roughness(self, X):
+        return _measure_roughness(X)
+
+    def performance_parameters_line(self, Y):
+        (loglikelihood,
+        low_std_to_mean_penalty,
+        low_variance_Q_penalty,
+        low_variance_R_penalty,
+        low_variance_P0_penalty,
+        system_inestability_penalty,
+        mean_squared_error_penalty,
+        roughness_X_penalty,
+        roughness_Y_penalty) = self.performance_parameters(Y)
+        return "LL: {0:.2g} | std/avg: {1:.2g} | lQ: {2:.2g} lR: {3:.2g} lP0: {4:.2g} | inest: {5:.2g} mse: {6:.2g} | roX: {7:.2g} roY: {8:.2g}".format(
+                loglikelihood,
+                low_std_to_mean_penalty,
+                low_variance_Q_penalty,
+                low_variance_R_penalty,
+                low_variance_P0_penalty,
+                system_inestability_penalty,
+                mean_squared_error_penalty,
+                roughness_X_penalty,
+                roughness_Y_penalty)
+    
+    def performance_parameters(self, Y):
+        ks = kalman_smoother_from_parameters(Y, self)
+        loglikelihood = ks.loglikelihood()
+        low_std_to_mean_penalty = self._penalize_low_std_to_mean_ratio(ks.X0(), ks.P0())
+        low_variance_Q_penalty = self._penalize_low_variance(ks.Q())
+        low_variance_R_penalty = self._penalize_low_variance(ks.R())
+        low_variance_P0_penalty = self._penalize_low_variance(ks.P0())
+        system_inestability_penalty = self._penalize_inestable_system(ks.F())
+        mean_squared_error_penalty = self._penalize_mean_squared_error(Y, ks)
+        roughness_X_penalty = self._penalize_roughness(ks.Xs())
+        roughness_Y_penalty = self._penalize_roughness(Y)
+        return [
+            loglikelihood,
+            low_std_to_mean_penalty,
+            low_variance_Q_penalty,
+            low_variance_R_penalty,
+            low_variance_P0_penalty,
+            system_inestability_penalty,
+            mean_squared_error_penalty,
+            roughness_X_penalty,
+            roughness_Y_penalty,
+        ]
 
 
 def _create_params_ones_kx1(M, K=[100.0]):
@@ -452,8 +547,11 @@ class SSMEstimated:
 
 def _predict_expected_ssm(H, Xpred):
     Ypred = _zero_matrix(_nrows(H), _ncols(Xpred))
+    #print("H:", H)
+    #print("X:", Xpred)
     for t in range(_ncols(Xpred)):
         _set_col(Ypred, t, _dot(H, _col(Xpred, t)))
+        #print("Ypred", t, ":", _col(Ypred, t))
     return Ypred
 
 def _mean_squared_error(Y, Ypred):
@@ -580,10 +678,15 @@ class KalmanFilter:
 
         if not(
             _nrows(self.Y()) == _nrows(self.H()) and
-            _ncols(self.R()) == _nrows(self.Q()) and
+            #_ncols(self.R()) == _nrows(self.Q()) and
             _ncols(self.R()) == _nrows(self.H())
         ):
-            raise ValueError("There is no concordance in the dimension of observed signal.")
+            raise ValueError("There is no concordance in the dimension of observed signal. Values:",
+                _nrows(self.Y()) == _nrows(self.H()),
+                #_ncols(self.R()) == _nrows(self.Q()),
+                _ncols(self.R()) == _nrows(self.H()),
+                ", ".join("{0}: {1}".format(n, getattr(self, n)().shape) for n in ("Y", "F", "H", "R", "Q", "P0", "Q"))
+            )
 
         if not(
             _nrows(self.P0()) == _ncols(self.P0()) and
@@ -594,7 +697,16 @@ class KalmanFilter:
             _ncols(self.F()) == _nrows(self.F()) and
             _ncols(self.Q()) == _nrows(self.Q())
         ):
-            raise ValueError("There is no concordance in the dimension of latent signal.")
+            raise ValueError("There is no concordance in the dimension of latent signal. Values:",
+                _nrows(self.P0()) == _ncols(self.P0()),
+                _nrows(self.X0()) == _ncols(self.P0()),
+                _nrows(self.X0()) == _ncols(self.H()),
+                _nrows(self.F()) == _ncols(self.H()),
+                _nrows(self.F()) == _ncols(self.Q()),
+                _ncols(self.F()) == _nrows(self.F()),
+                _ncols(self.Q()) == _nrows(self.Q()),
+                ", ".join("{0}: {1}".format(n, getattr(self, n)().shape) for n in ("Y", "F", "H", "R", "Q", "P0", "Q"))
+            )
 
     def filter(self):
         self.verify_parameters()
@@ -838,6 +950,8 @@ def test_smoother_3():
 # EM SSM Estimator
 #####################################################################
 
+# https://emtiyaz.github.io/papers/TBME-00664-2005.R2-preprint.pdf
+
 class ExpectationMaximizationEstimator:
     def __init__(self):
         self.parameters = None
@@ -888,31 +1002,35 @@ class ExpectationMaximizationEstimator:
         for i in range(T):
             _set_slice(P, i, _slice(ks.Ps(), i) + _dot(_col(ks.Xs(), i), _t(_col(ks.Xs(), i))))
             if i < T - 1:
-                _set_slice(ACF, i, _slice(ks.Ps(), i) + _dot(_col(ks.Xs(), i + 1), _t(_col(ks.Xs(), i))))
+                _set_slice(ACF, i, _slice(ks.Cs(), i) + _dot(_col(ks.Xs(), i + 1), _t(_col(ks.Xs(), i))))
         
         if self.estimate_H:
             self.parameters.H = _inv(_sum_slices(P))
-            H1 = _zero_matrix(L, L)
+            H1 = _zero_matrix(O, L)
             for t in range(T):
                 H1 += _dot(_col(ks.Y(), t), _t(_col(ks.Xs(), t)))
+                #print(" ", t, _dot(_col(ks.Y(), t), _t(_col(ks.Xs(), t))))
             self.parameters.H = _dot(H1, self.parameters.H)
-            # Fix math rounding errors
-            _set_diag_values_positive(self.parameters.H)
+            #print("**",self.parameters.H)
         if self.estimate_R:
             self.parameters.R = _zero_matrix(O, O)
             for t in range(T):
                 self.parameters.R += _dot(_col(ks.Y(), t) * _t(_col(ks.Y(), t))) - _dot(self.parameters.H, _col(ks.Xs(), t), _t(_col(ks.Y(), t)))
             self.parameters.R /= T
+            # Fix math rounding errors
             _set_diag_values_positive(self.parameters.R)
         if self.estimate_F:
             self.parameters.F = _dot(_sum_slices(ACF), _inv(_sum_slices(_head_slices(P))))
         if self.estimate_Q:
             self.parameters.Q = _sum_slices(_tail_slices(P)) - _dot(self.parameters.F, _t(_sum_slices(ACF))) / (T - 1)
+            self.parameters.Q /= (T - 1)
             _set_diag_values_positive(self.parameters.Q)
         if self.estimate_X0:
             self.parameters.X0 = _col(ks.Xs(), 0)
         if self.estimate_P0:
             self.parameters.P0 = _slice(ks.Ps(), 0)
+            _set_diag_values_positive(self.parameters.P0)
+        #self.parameters.show(); print("-"*80)
 
     def estimate_parameters(self):
         self.estimation_iteration()
@@ -1114,7 +1232,7 @@ class PSOHeuristicEstimatorParticle:
         self.penalty_factor_mse = mse
         self.penalty_factor_roughness_X = roughness_X
         self.penalty_factor_roughness_Y = roughness_Y
-
+    '''
     def _penalize_low_std_to_mean_ratio(self, ks):
         """
          We expect that the variance must be
@@ -1142,7 +1260,8 @@ class PSOHeuristicEstimatorParticle:
         10              0.0001
         """
         #return 10 ** (-np.log10(np.sum(X) + 1e-100) - 2.0)
-        return 0.001/np.sum(X)
+        return 0.1/ ((X / (X.mean(axis=1) ** 2)).max())
+        #return 0.001/np.sum(X)
     
     def _penalize_inestable_system(self, X):
         """
@@ -1194,6 +1313,38 @@ class PSOHeuristicEstimatorParticle:
             self.best_metric = self.metric
             self.best_params = self.params.copy()
             self.best_loglikelihood = self.loglikelihood
+    '''
+    
+    def evaluate(self, Y, index=0):
+        (loglikelihood,
+        low_std_to_mean_penalty,
+        low_variance_Q_penalty,
+        low_variance_R_penalty,
+        low_variance_P0_penalty,
+        system_inestability_penalty,
+        mean_squared_error_penalty,
+        roughness_X_penalty,
+        roughness_Y_penalty) = self.params.performance_parameters(Y)
+        self.loglikelihood = loglikelihood
+        self.metric = loglikelihood
+        self.metric -= self.penalty_factor_low_std_mean_ratio * low_std_to_mean_penalty
+        self.metric -= self.penalty_factor_low_variance_Q * low_variance_Q_penalty
+        self.metric -= self.penalty_factor_low_variance_R * low_variance_R_penalty
+        self.metric -= self.penalty_factor_low_variance_P0 * low_variance_P0_penalty
+        self.metric -= self.penalty_factor_inestable_system * system_inestability_penalty
+        self.metric -= self.penalty_factor_mse * mean_squared_error_penalty
+        self.metric -= self.penalty_factor_roughness_X * roughness_X_penalty
+        self.metric -= self.penalty_factor_roughness_Y * roughness_Y_penalty
+        if DEBUG_HEURISTIC:
+            print("*****",
+                self.metric,
+                "====",
+                self.params.performance_parameters_line(Y)
+            )
+        if self.metric > self.best_metric:
+            self.best_metric = self.metric
+            self.best_params = self.params.copy()
+            self.best_loglikelihood = self.loglikelihood
     
     def set_movable_params(self, est_F, est_H, est_Q, est_R, est_X0, est_P0):
         self.estimate_F = est_F
@@ -1202,8 +1353,10 @@ class PSOHeuristicEstimatorParticle:
         self.estimate_R = est_R
         self.estimate_X0 = est_X0
         self.estimate_P0 = est_P0
+        #!###print("====>", self.estimate_F, self.estimate_H, self.estimate_Q, self.estimate_R, self.estimate_X0, self.estimate_P0,)
 
     def move(self, best_particle):
+        #print("==**>", self.estimate_F, self.estimate_H, self.estimate_Q, self.estimate_R, self.estimate_X0, self.estimate_P0,)
         move_to_self_best = 2 * np.random.uniform()
         move_to_global_best = 2 * np.random.uniform()
         if self.estimate_F:
@@ -1267,6 +1420,7 @@ class PurePSOHeuristicEstimator:
         return PSOHeuristicEstimatorParticle()
 
     def set_parameters(self, Y, parameters=None, est_F=True, est_H=True, est_Q=True, est_R=True, est_X0=True, est_P0=True, lat_dim=None):
+        #!###print("****==>", self.estimate_F, self.estimate_H, self.estimate_Q, self.estimate_R, self.estimate_X0, self.estimate_P0,)
         #
         if parameters is not None:
             self.parameters = parameters
@@ -1286,17 +1440,26 @@ class PurePSOHeuristicEstimator:
         self.estimate_R = est_R
         self.estimate_X0 = est_X0
         self.estimate_P0 = est_P0
+        #!###print("****==>", self.estimate_F, self.estimate_H, self.estimate_Q, self.estimate_R, self.estimate_X0, self.estimate_P0,)
         #
         self.best_particle = self._create_particle()
         self.particles = []
+        parameters.show()
         for i in range(self.population_size):
             self.particles.append(self._create_particle())
             if i == 0:
                 self.particles[i].init_with_parameters(_nrows(Y), parameters.copy(), False, False, False, False, False, False, parameters.lat_dim)
+            #if i < min(3, int(self.population_size * 0.5)):
+            #    self.particles[i].init_with_parameters(_nrows(Y), parameters.copy(), False, False, False, False, False, False, parameters.lat_dim)
+            #elif min(3, int(self.population_size * 0.5)) <= i and i < min(5, int(self.population_size * 0.6)):
+            #    self.particles[i].init_with_parameters(_nrows(Y), parameters.copy(), True, True, True, True, True, True, parameters.lat_dim)
             else:
                 self.particles[i].init_with_parameters(_nrows(Y), parameters.copy(), est_F, est_H, est_Q, est_R, est_X0, est_P0, lat_dim)
             #self.particles[i].params.show()
             self.particles[i].set_movable_params(est_F, est_H, est_Q, est_R, est_X0, est_P0)
+            #!###s = self.particles[i]
+            #!###print("****==>", s.estimate_F, s.estimate_H, s.estimate_Q, s.estimate_R, s.estimate_X0, s.estimate_P0,)
+
             self.particles[i].set_penalty_factors(
                 self.penalty_factor_low_variance_Q,
                 self.penalty_factor_low_variance_R,
@@ -1312,21 +1475,32 @@ class PurePSOHeuristicEstimator:
             self.best_particle.copy_best_from(self.particles[i], True)
             ###print(" **  ", self.particles[i].metric)
             ###self.particles[i].params.show()
+            #print("."*80); self.particles[i].params.show()
         #
+        ###
+        #self.parameters.show()
         self.parameters.copy_from(self.best_particle.best_params)
+        ###
+        #self.parameters.show()
         #
 
     def estimation_iteration_heuristic(self):
         for i in range(self.population_size):
             #self.particles[i].evaluate(self.Y)
+            #print("-"*80); self.particles[i].params.show()
             y0, subY = _subsample(self.Y, self.sample_size)
             self.particles[i].evaluate(subY, y0)
             self.best_particle.copy_best_from(self.particles[i])
             self.particles[i].move(self.best_particle)
+            #print("."*80); self.particles[i].params.show()
         self.loglikelihood_record.append(self.best_particle.best_metric)
         self.parameters.copy_from(self.best_particle.best_params)
         if DEBUG_HEURISTIC:
-            print(" >>>> ", self.best_particle.metric, ":", self.best_particle.loglikelihood)
+            ks = kalman_smoother_from_parameters(self.Y, self.best_particle.best_params)
+            print(" >>>> ", self.best_particle.metric,
+                "====",
+                self.best_particle.params.performance_parameters_line(self.Y)
+            )
             self.best_particle.params.show()
     
     def estimate_parameters(self):
@@ -1355,7 +1529,7 @@ def _test_pure_pso_1():
     #kf.penalty_factor_roughness_X = 1
     #kf.penalty_factor_roughness_Y = 1
     kf.set_parameters(y, params)
-    kf.estimate_parameters()
+    #kf.estimate_parameters()
     kf.parameters.show()
     if DEBUG_HEURISTIC:
         print(kf.loglikelihood_record)
@@ -1421,6 +1595,18 @@ def estimate_using_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X00=
     
     estimator.sample_size = sample_size
     estimator.population_size = population_size
+    
+    if isinstance(penalty_factors, dict):
+        penalty_factors = [
+            penalty_factors.get("low_variance_Q", 0.5),
+            penalty_factors.get("low_variance_R", 0.5),
+            penalty_factors.get("low_variance_P0", 0.5),
+            penalty_factors.get("low_std_mean_ratio", 0.5),
+            penalty_factors.get("inestable_system",1),
+            penalty_factors.get("mse", 0.25),
+            penalty_factors.get("roughness_X", 0.5),
+            penalty_factors.get("roughness_Y", 0.5),
+        ]
     estimator.penalty_factor_low_variance_Q = penalty_factors[0]
     estimator.penalty_factor_low_variance_R = penalty_factors[1]
     estimator.penalty_factor_low_variance_P0 = penalty_factors[2]
@@ -1452,7 +1638,7 @@ def estimate_using_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X00=
     parameters.obs_dim = _nrows(Y)
     parameters.obs_dim = _nrows(Y)
     parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
-    estimator.set_parameters(Y, parameters)
+    estimator.set_parameters(Y, parameters, "F" in estimates, "H" in estimates, "Q" in estimates, "R" in estimates, "X0" in estimates, "P0" in estimates, lat_dim=None)
     estimator.estimate_parameters()
     ks = estimator.smoother()
     ks.smooth()
@@ -1636,6 +1822,18 @@ def estimate_using_lse_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, 
     
     estimator.sample_size = sample_size
     estimator.population_size = population_size
+
+    if isinstance(penalty_factors, dict):
+        penalty_factors = [
+            penalty_factors.get("low_variance_Q", 0.5),
+            penalty_factors.get("low_variance_R", 0.5),
+            penalty_factors.get("low_variance_P0", 0.5),
+            penalty_factors.get("low_std_mean_ratio", 0.5),
+            penalty_factors.get("inestable_system",1),
+            penalty_factors.get("mse", 0.25),
+            penalty_factors.get("roughness_X", 0.5),
+            penalty_factors.get("roughness_Y", 0.5),
+        ]
     estimator.penalty_factor_low_variance_Q = penalty_factors[0]
     estimator.penalty_factor_low_variance_R = penalty_factors[1]
     estimator.penalty_factor_low_variance_P0 = penalty_factors[2]
@@ -1667,7 +1865,7 @@ def estimate_using_lse_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, 
     parameters.obs_dim = _nrows(Y)
     parameters.obs_dim = _nrows(Y)
     parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
-    estimator.set_parameters(Y, parameters)
+    estimator.set_parameters(Y, parameters, "F" in estimates, "H" in estimates, "Q" in estimates, "R" in estimates, "X0" in estimates, "P0" in estimates, lat_dim=None)
     estimator.estimate_parameters()
     ks = estimator.smoother()
     ks.smooth()
@@ -1729,6 +1927,15 @@ class EMHeuristicEstimatorParticle(PSOHeuristicEstimatorParticle):
         subestimator.estimate_R = self.estimate_R
         subestimator.estimate_X0 = self.estimate_X0
         subestimator.estimate_P0 = self.estimate_P0
+        print(
+            "subestimator:",
+            subestimator.estimate_F,
+            subestimator.estimate_H,
+            subestimator.estimate_Q,
+            subestimator.estimate_R,
+            subestimator.estimate_X0,
+            subestimator.estimate_P0,
+        )
         subestimator.parameters = self.params
         #estimator.parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
         subestimator.estimation_iteration()
@@ -1829,6 +2036,18 @@ def estimate_using_em_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X
     
     estimator.sample_size = sample_size
     estimator.population_size = population_size
+
+    if isinstance(penalty_factors, dict):
+        penalty_factors = [
+            penalty_factors.get("low_variance_Q", 0.5),
+            penalty_factors.get("low_variance_R", 0.5),
+            penalty_factors.get("low_variance_P0", 0.5),
+            penalty_factors.get("low_std_mean_ratio", 0.5),
+            penalty_factors.get("inestable_system",1),
+            penalty_factors.get("mse", 0.25),
+            penalty_factors.get("roughness_X", 0.5),
+            penalty_factors.get("roughness_Y", 0.5),
+        ]
     estimator.penalty_factor_low_variance_Q = penalty_factors[0]
     estimator.penalty_factor_low_variance_R = penalty_factors[1]
     estimator.penalty_factor_low_variance_P0 = penalty_factors[2]
@@ -1860,13 +2079,13 @@ def estimate_using_em_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X
     parameters.obs_dim = _nrows(Y)
     parameters.obs_dim = _nrows(Y)
     parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
-    estimator.set_parameters(Y, parameters)
+    estimator.set_parameters(Y, parameters, "F" in estimates, "H" in estimates, "Q" in estimates, "R" in estimates, "X0" in estimates, "P0" in estimates, lat_dim=None)
     estimator.estimate_parameters()
     ks = estimator.smoother()
     ks.smooth()
     return ks, estimator.loglikelihood_record
 
-def _test_pure_lse_pso_3():
+def _test_pure_em_pso_3():
     params = _create_params_ones_kx1([-50], [10])
     x, y = params.simulate(1000)
     ks, records = estimate_using_em_pso(y,
@@ -1888,7 +2107,7 @@ def _test_pure_lse_pso_3():
 def _test_pure_em_pso_4():
     params = _create_params_ones_kx1([-50], [10])
     x, y = params.simulate(1000)
-    ks, records = estimate_using_lse_pso(y,
+    ks, records = estimate_using_em_pso(y,
         estimates="F H Q R X0 P0",
         F0=params.F, H0=params.H, Q0=params.Q, R0=params.R, X00=params.X0, P00=params.P0,
         min_iterations=10, max_iterations=20, min_improvement=0.01, lat_dim=None,
@@ -1906,8 +2125,9 @@ def _test_pure_em_pso_4():
 
 
 if __name__ == "__main__":
-    import pytest
-    pytest.main(sys.argv[0])
+    pass
+    #import pytest
+    #pytest.main(sys.argv[0])
     #_test_pure_pso_1()
 
 # For testing run
