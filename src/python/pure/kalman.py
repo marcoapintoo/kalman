@@ -23,7 +23,7 @@ def _mvn_probability(x, mean, cov):
     return np.exp(-0.5 * _dot((x - mean).T, _inv(cov), (x - mean))) / np.sqrt(2 * np.pi * np.linalg.det(cov))
 
 def _mvn_logprobability(x, mean, cov):
-    return (-0.5 * _dot((x - mean).T, _inv(cov), (x - mean))) - 0.5 * np.log(2 * np.pi) - 0.5 * np.log(np.linalg.det(cov))
+    return np.asscalar((-0.5 * _dot((x - mean).T, _inv(cov), (x - mean))) - 0.5 * np.log(2 * np.pi) - 0.5 * np.log(np.linalg.det(cov)))
 
 def test_mvn_probability():
     xs = np.linspace(-5, 5, 101)
@@ -66,6 +66,37 @@ def test_mvn_logprobability():
 def _mvn_sample(mean, cov):
     return scipy.stats.multivariate_normal.rvs(mean=mean.ravel(), cov=cov).reshape(mean.shape)
 
+def _covariance_matrix_estimation(X): # unbiased estimation
+    #Q = -1 * _dot(_sum_cols(X), _t(_sum_cols(X))) * (_ncols(X) - 1) / (_ncols(X) * _ncols(X))
+    Q = -1 * _dot(_sum_cols(X), _t(_sum_cols(X))) / _ncols(X)
+    for t in range(_ncols(X)):
+        Q += _dot(_col(X, t), _t(_col(X, t)))
+    Q /= (_ncols(X) - 1)
+    if np.isscalar(Q):
+        Q = np.array([[Q]])
+    return Q
+
+def test_covariance_matrix_estimation():
+    X = np.array([[1, -2, 4], [1, 5, 3]])
+    Y = _covariance_matrix_estimation(X)
+    assert _ncols(Y) == 2
+    assert _nrows(Y) == 2
+    assert np.abs(Y[0, 0] -  9) < 0.01
+    assert np.abs(Y[0, 1] - -3) < 0.01
+    assert np.abs(Y[1, 0] - -3) < 0.01
+    assert np.abs(Y[1, 1] -  4) < 0.01
+    
+    X = _zero_matrix(1, 4)
+    X[0, 0] = 0
+    X[0, 1] = 1
+    X[0, 2] = 2
+    X[0, 3] = 3
+    Y = _covariance_matrix_estimation(X)
+    assert _ncols(Y) == 1
+    assert _nrows(Y) == 1
+    assert np.abs(Y[0, 0] - 1.666) < 0.01
+
+
 #####################################################################
 # Math cross-platform functions
 #####################################################################
@@ -106,16 +137,16 @@ def test_create_noised_diag():
             else:
                 assert np.abs(m[i][j] - 0) < 0.1
 
-def _sum_cube(X):
+def _sum_slices(X):
     return np.sum(X, axis=2)
 
-def test_sum_cube():
+def test_sum_slices():
     X = np.zeros((2, 2, 4))
     X[:, :, 0] = [[0, 1], [2, 3]]
     X[:, :, 1] = [[0, 0], [0, 1]]
     X[:, :, 2] = [[1, 1], [0, -1]]
     X[:, :, 3] = [[2, 0], [2, 0]]
-    Y = _sum_cube(X)
+    Y = _sum_slices(X)
     assert Y[0][0] == 3
     assert Y[0][1] == 2
     assert Y[1][0] == 4
@@ -124,8 +155,20 @@ def test_sum_cube():
     X[:, :, 0] = [1]
     X[:, :, 1] = [1]
     X[:, :, 2] = [2]
-    Y = _sum_cube(X)
+    Y = _sum_slices(X)
     assert Y[0][0] == 4
+
+def _sum_cols(X):
+    return np.sum(X, axis=1).reshape(-1, 1)
+
+def test_sum_cols():
+    X = np.array([[0, 1, 2, 3], [4, 5, 6, 7]])
+    Y = _sum_cols(X)
+    assert _ncols(Y) == 1
+    assert _nrows(Y) == 2
+    assert Y[0, 0] == 6
+    assert Y[1, 0] == 22
+
 
 def _set_diag_values_positive(X):
     for i in range(X.shape[0]):
@@ -135,7 +178,7 @@ def _set_diag_values_positive(X):
 def _subsample(Y, sample_size):
     if sample_size >= Y.shape[1]: return Y
     i0 = np.random.random_integers(0, Y.shape[1] - sample_size - 1)
-    return Y[:, i0: i0 + sample_size]
+    return i0, Y[:, i0: i0 + sample_size]
 
 def _dot(*vars):
     p = vars[0]
@@ -178,13 +221,31 @@ def _t(X):
     return X.T
 
 def _row(X, k):
-    return X[k, :]
+    return X[k, :].reshape(1, -1)
+
+def test_row():
+    X = np.array([[0, 1], [1, 2], [3, 4]])
+    Y = _row(X, 0)
+    assert _ncols(Y) == 2
+    assert _nrows(Y) == 1
 
 def _col(X, k):
-    return X[:, k]
+    return X[:, k].reshape(-1, 1)
+
+def test_col():
+    X = np.array([[0, 1], [1, 2], [3, 4]])
+    Y = _col(X, 0)
+    assert _ncols(Y) == 1
+    assert _nrows(Y) == 3
 
 def _slice(X, k):
     return X[:, :, k]
+
+def test_slice():
+    X = np.array([[[0], [1]], [[1], [2]], [[3], [4]]])
+    Y = _slice(X, 0)
+    assert _ncols(Y) == 2
+    assert _nrows(Y) == 3
 
 def _set_row(X, k, v):
     X[k, :] = v
@@ -225,7 +286,13 @@ def _head_slices(X):
     return X[:, :, :X.shape[-1] - 1]
 
 def _tail_slices(X):
-    return X[:, :, X.shape[-1] - 1:]
+    return X[:, :, -(X.shape[-1] - 1):]
+
+def _head_cols(X):
+    return X[:, :X.shape[-1] - 1]
+
+def _tail_cols(X):
+    return X[:, -(X.shape[-1] - 1):]
 
 #####################################################################
 # Invariant SSM
@@ -340,10 +407,10 @@ def _create_params_ones_kx1(M, K=[100.0]):
     params = SSMParameters()
     params.F = np.array([[1-1e-10]])
     params.H = K
-    params.Q = np.array([[0.01]])
-    params.R = 0.01 * _create_noised_diag(_nrows(K), _nrows(K))
+    params.Q = np.array([[0.001]])
+    params.R = 0.001 * _create_noised_diag(_nrows(K), _nrows(K))
     params.X0 = np.array([M])
-    params.P0 = np.array([[0.01]])
+    params.P0 = np.array([[0.001]])
     params.set_dimensions(len(K), 1)
     return params
 
@@ -409,11 +476,11 @@ def test_mean_squared_error():
     assert _mean_squared_error(Y, Ypred) == 3.0
 
 def _measure_roughness(X):
-    #https://stats.stackexchange.com/questions/24607/how-to-measure-smoothness-of-a-time-series-in-r
+    # https://stats.stackexchange.com/questions/24607/how-to-measure-smoothness-of-a-time-series-in-r
     diffX = np.diff(X, axis=1)
-    return np.mean(np.std(diffX, axis=1) / (np.abs(np.mean(diffX, axis=1)) + 1e-3))
+    return np.round(np.mean(np.std(diffX, axis=1) / (np.abs(np.mean(diffX, axis=1)) + 1e-3)), 2)
 
-def test_measure_roughness(X):
+def test_measure_roughness():
     X = np.array([
         [ 1,  3,  5,  7,  9],
         [11, 13, 15, 17, 19]
@@ -724,6 +791,7 @@ def kalman_smoother(Y, F, H, Q, R, X0, P0):
     kf.smooth()
     return kf
 
+# it sends a reference of params, not a copy
 def kalman_smoother_from_parameters(Y, params):
     kf = KalmanSmoother()
     kf.parameters = params
@@ -823,7 +891,7 @@ class ExpectationMaximizationEstimator:
                 _set_slice(ACF, i, _slice(ks.Ps(), i) + _dot(_col(ks.Xs(), i + 1), _t(_col(ks.Xs(), i))))
         
         if self.estimate_H:
-            self.parameters.H = _inv(_sum_cube(P))
+            self.parameters.H = _inv(_sum_slices(P))
             H1 = _zero_matrix(L, L)
             for t in range(T):
                 H1 += _dot(_col(ks.Y(), t), _t(_col(ks.Xs(), t)))
@@ -837,9 +905,9 @@ class ExpectationMaximizationEstimator:
             self.parameters.R /= T
             _set_diag_values_positive(self.parameters.R)
         if self.estimate_F:
-            self.parameters.F = _dot(_sum_cube(ACF), _inv(_sum_cube(_head_slices(P))))
+            self.parameters.F = _dot(_sum_slices(ACF), _inv(_sum_slices(_head_slices(P))))
         if self.estimate_Q:
-            self.parameters.Q = _sum_cube(_tail_slices(P)) - _dot(self.parameters.F, _t(_sum_cube(ACF))) / (T - 1)
+            self.parameters.Q = _sum_slices(_tail_slices(P)) - _dot(self.parameters.F, _t(_sum_slices(ACF))) / (T - 1)
             _set_diag_values_positive(self.parameters.Q)
         if self.estimate_X0:
             self.parameters.X0 = _col(ks.Xs(), 0)
@@ -958,21 +1026,21 @@ def test_expectation_maximization_3():
         F0=params.F, H0=params.H, Q0=params.Q, R0=params.R, X00=params.X0, P00=params.P0,
         min_iterations=1, max_iterations=10, min_improvement=0.01, lat_dim=None)
     neoparams = ks.parameters
-    print(records)
-    neoparams.show()
-    params.show()
+    #print(records)
+    #neoparams.show()
+    #params.show()
     #params_orig.show()
     assert (np.abs(np.mean(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
     assert (np.abs(np.mean(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
     assert (np.abs(np.mean(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
     
 #####################################################################
-# Heuristic SSM Estimator
+# PSO Heuristic SSM Estimator
 #####################################################################
 
 DEBUG_HEURISTIC = True
 
-class HeuristicEstimatorParticle:
+class PSOHeuristicEstimatorParticle:
     def __init__(self):
         self.params = SSMParameters()
         self.metric = -1e100
@@ -981,14 +1049,21 @@ class HeuristicEstimatorParticle:
         self.best_metric = -1e150
         self.best_loglikelihood = -1e150
         
-        self.factor_penalization_low_variance_Q = 0
-        self.factor_penalization_low_variance_R = 0
-        self.factor_penalization_low_variance_P0 = 0
-        self.factor_penalization_low_std_mean_ratio = 0
-        self.factor_penalization_inestable_system = 0
-        self.factor_penalization_mse = 0
-        self.factor_penalization_roughness_X = 0
-        self.factor_penalization_roughness_Y = 0
+        self.penalty_factor_low_variance_Q = 0
+        self.penalty_factor_low_variance_R = 0
+        self.penalty_factor_low_variance_P0 = 0
+        self.penalty_factor_low_std_mean_ratio = 0
+        self.penalty_factor_inestable_system = 0
+        self.penalty_factor_mse = 0
+        self.penalty_factor_roughness_X = 0
+        self.penalty_factor_roughness_Y = 0
+
+        self.estimate_F = True
+        self.estimate_H = True
+        self.estimate_Q = True
+        self.estimate_R = True
+        self.estimate_X0 = True
+        self.estimate_P0 = True
         
     # Assume that any param not null is fixed
     def init(self, obs_dim, lat_dim, F0=None, H0=None, Q0=None, R0=None, X00=None, P00=None):
@@ -1030,21 +1105,21 @@ class HeuristicEstimatorParticle:
         self.params.random_initialize(est_F, est_H, est_Q, est_R, est_X0, est_P0)
         self.best_params = self.params.copy()
     
-    def set_penalization_factors(self, low_variance_Q=1, low_variance_R=1, low_variance_P0=1, low_std_mean_ratio=1, inestable_system=1, mse=0.5, roughness_X=1, roughness_Y=1):
-        self.factor_penalization_low_variance_Q = low_variance_Q
-        self.factor_penalization_low_variance_R = low_variance_R
-        self.factor_penalization_low_variance_P0 = low_variance_P0
-        self.factor_penalization_low_std_mean_ratio = low_std_mean_ratio
-        self.factor_penalization_inestable_system = inestable_system
-        self.factor_penalization_mse = mse
-        self.factor_penalization_roughness_X = roughness_X
-        self.factor_penalization_roughness_Y = roughness_Y
+    def set_penalty_factors(self, low_variance_Q=1, low_variance_R=1, low_variance_P0=1, low_std_mean_ratio=1, inestable_system=1, mse=0.5, roughness_X=1, roughness_Y=1):
+        self.penalty_factor_low_variance_Q = low_variance_Q
+        self.penalty_factor_low_variance_R = low_variance_R
+        self.penalty_factor_low_variance_P0 = low_variance_P0
+        self.penalty_factor_low_std_mean_ratio = low_std_mean_ratio
+        self.penalty_factor_inestable_system = inestable_system
+        self.penalty_factor_mse = mse
+        self.penalty_factor_roughness_X = roughness_X
+        self.penalty_factor_roughness_Y = roughness_Y
 
     def _penalize_low_std_to_mean_ratio(self, ks):
         """
          We expect that the variance must be
          low compared with the mean:
-           Mean      Std       Penalization
+           Mean      Std       penalty
             1         0            undefined
             1         1            100 = 100 * std/mean
             10        1            10 = 100 * std/mean
@@ -1058,7 +1133,7 @@ class HeuristicEstimatorParticle:
         
     def _penalize_low_variance(self, X):
         """
-        PENALIZATION RULE:
+        penalty RULE:
         0.0001          10
         0.001           1
         0.01            0.1
@@ -1071,8 +1146,8 @@ class HeuristicEstimatorParticle:
     
     def _penalize_inestable_system(self, X):
         """
-        Penalization
-        eigenvalues of X    penalization
+        penalty
+        eigenvalues of X    penalty
         1   1   1           ~ 27
         0.1 0.1 0.1         ~ 0.08
         0.5 0.9 0.5         ~ 8
@@ -1085,18 +1160,18 @@ class HeuristicEstimatorParticle:
     def _penalize_roughness(self, X):
         return _measure_roughness(X)
 
-    def evaluate(self, Y):
+    def evaluate(self, Y, index=0):
         ks = kalman_smoother_from_parameters(Y, self.params)
         self.loglikelihood = ks.loglikelihood()
         self.metric = self.loglikelihood
-        self.metric -= self.factor_penalization_low_std_mean_ratio * self._penalize_low_std_to_mean_ratio(ks)
-        self.metric -= self.factor_penalization_low_variance_Q * self._penalize_low_variance(ks.Q())
-        self.metric -= self.factor_penalization_low_variance_R * self._penalize_low_variance(ks.R())
-        self.metric -= self.factor_penalization_low_variance_P0 * self._penalize_low_variance(ks.P0())
-        self.metric -= self.factor_penalization_inestable_system * self._penalize_inestable_system(ks.F())
-        self.metric -= self.factor_penalization_mse * self._penalize_mean_squared_error(Y, ks)
-        self.metric -= self.factor_penalization_roughness_X * self._penalize_roughness(ks.Xs())
-        self.metric -= self.factor_penalization_roughness_Y * self._penalize_roughness(Y)
+        self.metric -= self.penalty_factor_low_std_mean_ratio * self._penalize_low_std_to_mean_ratio(ks)
+        self.metric -= self.penalty_factor_low_variance_Q * self._penalize_low_variance(ks.Q())
+        self.metric -= self.penalty_factor_low_variance_R * self._penalize_low_variance(ks.R())
+        self.metric -= self.penalty_factor_low_variance_P0 * self._penalize_low_variance(ks.P0())
+        self.metric -= self.penalty_factor_inestable_system * self._penalize_inestable_system(ks.F())
+        self.metric -= self.penalty_factor_mse * self._penalize_mean_squared_error(Y, ks)
+        self.metric -= self.penalty_factor_roughness_X * self._penalize_roughness(ks.Xs())
+        self.metric -= self.penalty_factor_roughness_Y * self._penalize_roughness(Y)
         if DEBUG_HEURISTIC:
             print("*****",
                 self.metric,
@@ -1119,25 +1194,33 @@ class HeuristicEstimatorParticle:
             self.best_metric = self.metric
             self.best_params = self.params.copy()
             self.best_loglikelihood = self.loglikelihood
-        
-    def move(self, best_particle, est_F=True, est_H=True, est_Q=True, est_R=True, est_X0=True, est_P0=True):
+    
+    def set_movable_params(self, est_F, est_H, est_Q, est_R, est_X0, est_P0):
+        self.estimate_F = est_F
+        self.estimate_H = est_H
+        self.estimate_Q = est_Q
+        self.estimate_R = est_R
+        self.estimate_X0 = est_X0
+        self.estimate_P0 = est_P0
+
+    def move(self, best_particle):
         move_to_self_best = 2 * np.random.uniform()
         move_to_global_best = 2 * np.random.uniform()
-        if est_F:
+        if self.estimate_F:
             self.params.F += move_to_self_best * (self.best_params.F - self.params.F) + move_to_global_best * (best_particle.best_params.F - self.params.F)
-        if est_H:
+        if self.estimate_H:
             self.params.H += move_to_self_best * (self.best_params.H - self.params.H) + move_to_global_best * (best_particle.best_params.H - self.params.H)
-        if est_Q:
+        if self.estimate_Q:
             self.params.Q += move_to_self_best * (self.best_params.Q - self.params.Q) + move_to_global_best * (best_particle.best_params.Q - self.params.Q)
             self.params.Q = 0.5 * (self.params.Q + _t(self.params.Q))
             _set_diag_values_positive(self.params.Q)
-        if est_R:
+        if self.estimate_R:
             self.params.R += move_to_self_best * (self.best_params.R - self.params.R) + move_to_global_best * (best_particle.best_params.R - self.params.R)
             self.params.R = 0.5 * (self.params.R + _t(self.params.R))
             _set_diag_values_positive(self.params.R)
-        if est_X0:
+        if self.estimate_X0:
             self.params.X0 += move_to_self_best * (self.best_params.X0 - self.params.X0) + move_to_global_best * (best_particle.best_params.X0 - self.params.X0)
-        if est_P0:
+        if self.estimate_P0:
             self.params.P0 += move_to_self_best * (self.best_params.P0 - self.params.P0) + move_to_global_best * (best_particle.best_params.P0 - self.params.P0)
             self.params.P0 = 0.5 * (self.params.P0 + _t(self.params.P0))
             _set_diag_values_positive(self.params.P0)
@@ -1170,16 +1253,18 @@ class PurePSOHeuristicEstimator:
         self.population_size = 50
         self.particles = []
         self.best_particle = None
-        self.factor_fitting = 0.5
         
-        self.factor_penalization_low_variance_Q = 0.5
-        self.factor_penalization_low_variance_R = 0.5
-        self.factor_penalization_low_variance_P0 = 0.5
-        self.factor_penalization_low_std_mean_ratio = 0.5
-        self.factor_penalization_inestable_system = 0.5
-        self.factor_penalization_mse = 0.25
-        self.factor_penalization_roughness_X = 0.25
-        self.factor_penalization_roughness_Y = 0.25
+        self.penalty_factor_low_variance_Q = 0.5
+        self.penalty_factor_low_variance_R = 0.5
+        self.penalty_factor_low_variance_P0 = 0.5
+        self.penalty_factor_low_std_mean_ratio = 0.5
+        self.penalty_factor_inestable_system = 1
+        self.penalty_factor_mse = 0.25
+        self.penalty_factor_roughness_X = 2
+        self.penalty_factor_roughness_Y = 2
+
+    def _create_particle(self):
+        return PSOHeuristicEstimatorParticle()
 
     def set_parameters(self, Y, parameters=None, est_F=True, est_H=True, est_Q=True, est_R=True, est_X0=True, est_P0=True, lat_dim=None):
         #
@@ -1202,26 +1287,28 @@ class PurePSOHeuristicEstimator:
         self.estimate_X0 = est_X0
         self.estimate_P0 = est_P0
         #
-        self.best_particle = HeuristicEstimatorParticle()
+        self.best_particle = self._create_particle()
         self.particles = []
         for i in range(self.population_size):
-            self.particles.append(HeuristicEstimatorParticle())
+            self.particles.append(self._create_particle())
             if i == 0:
                 self.particles[i].init_with_parameters(_nrows(Y), parameters.copy(), False, False, False, False, False, False, parameters.lat_dim)
             else:
                 self.particles[i].init_with_parameters(_nrows(Y), parameters.copy(), est_F, est_H, est_Q, est_R, est_X0, est_P0, lat_dim)
             #self.particles[i].params.show()
-            self.particles[i].set_penalization_factors(
-                self.factor_penalization_low_variance_Q,
-                self.factor_penalization_low_variance_R,
-                self.factor_penalization_low_variance_P0,
-                self.factor_penalization_low_std_mean_ratio,
-                self.factor_penalization_inestable_system,
-                self.factor_penalization_mse,
-                self.factor_penalization_roughness_X,
-                self.factor_penalization_roughness_Y,
+            self.particles[i].set_movable_params(est_F, est_H, est_Q, est_R, est_X0, est_P0)
+            self.particles[i].set_penalty_factors(
+                self.penalty_factor_low_variance_Q,
+                self.penalty_factor_low_variance_R,
+                self.penalty_factor_low_variance_P0,
+                self.penalty_factor_low_std_mean_ratio,
+                self.penalty_factor_inestable_system,
+                self.penalty_factor_mse,
+                self.penalty_factor_roughness_X,
+                self.penalty_factor_roughness_Y,
             )
-            self.particles[i].evaluate(_subsample(self.Y, self.sample_size))
+            y0, subY = _subsample(self.Y, self.sample_size)
+            self.particles[i].evaluate(subY, y0)
             self.best_particle.copy_best_from(self.particles[i], True)
             ###print(" **  ", self.particles[i].metric)
             ###self.particles[i].params.show()
@@ -1232,9 +1319,10 @@ class PurePSOHeuristicEstimator:
     def estimation_iteration_heuristic(self):
         for i in range(self.population_size):
             #self.particles[i].evaluate(self.Y)
-            self.particles[i].evaluate(_subsample(self.Y, self.sample_size))
+            y0, subY = _subsample(self.Y, self.sample_size)
+            self.particles[i].evaluate(subY, y0)
             self.best_particle.copy_best_from(self.particles[i])
-            self.particles[i].move(self.best_particle, self.estimate_F, self.estimate_H, self.estimate_Q, self.estimate_R, self.estimate_X0, self.estimate_P0)
+            self.particles[i].move(self.best_particle)
         self.loglikelihood_record.append(self.best_particle.best_metric)
         self.parameters.copy_from(self.best_particle.best_params)
         if DEBUG_HEURISTIC:
@@ -1255,7 +1343,7 @@ class PurePSOHeuristicEstimator:
         return kalman_smoother_from_parameters(self.Y, self.parameters)
 
 
-def test_pure_pso_1():
+def _test_pure_pso_1():
     params_orig = _create_params_ones_kx1([-50], [10])
     params = _create_params_ones_kx1([-50], [10])
     params.X0[0, 0] += 1
@@ -1264,6 +1352,8 @@ def test_pure_pso_1():
     #params.show()
     x, y = params.simulate(100)
     kf = PurePSOHeuristicEstimator()
+    #kf.penalty_factor_roughness_X = 1
+    #kf.penalty_factor_roughness_Y = 1
     kf.set_parameters(y, params)
     kf.estimate_parameters()
     kf.parameters.show()
@@ -1286,7 +1376,7 @@ def test_pure_pso_1():
     #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
     #assert np.round(np.std(kf.Xf()), 2) >= np.round(np.std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)"
 
-def test_pure_pso_2():
+def _test_pure_pso_2():
     params_orig = _create_params_ones_kx1([-50], [10])
     params = _create_params_ones_kx1([-50], [10])
     #params.X0[0, 0] += 1
@@ -1295,6 +1385,8 @@ def test_pure_pso_2():
     #params.show()
     x, y = params.simulate(100)
     kf = PurePSOHeuristicEstimator()
+    #kf.penalty_factor_roughness_X = 1
+    #kf.penalty_factor_roughness_Y = 1
     kf.set_parameters(y, params)
     kf.estimate_parameters()
     #kf.parameters.show()
@@ -1316,10 +1408,507 @@ def test_pure_pso_2():
     #assert np.round(np.std(kf.Xf()), 2) >= np.round(np.std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)"
 
 
+# [[export]]
+def estimate_using_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X00=None, P00=None, min_iterations=5, max_iterations=20, min_improvement=0.01, lat_dim=None, sample_size=30, population_size=50, penalty_factors=(0.5, 0.5, 0.5, 0.5, 1, 0.25, 2.0, 2.0)):
+    estimator = PurePSOHeuristicEstimator()
+    estimator.Y = Y
+    estimator.estimate_F = "F" in estimates
+    estimator.estimate_H = "H" in estimates
+    estimator.estimate_Q = "Q" in estimates
+    estimator.estimate_R = "R" in estimates
+    estimator.estimate_X0 = "X0" in estimates
+    estimator.estimate_P0 = "P0" in estimates
+    
+    estimator.sample_size = sample_size
+    estimator.population_size = population_size
+    estimator.penalty_factor_low_variance_Q = penalty_factors[0]
+    estimator.penalty_factor_low_variance_R = penalty_factors[1]
+    estimator.penalty_factor_low_variance_P0 = penalty_factors[2]
+    estimator.penalty_factor_low_std_mean_ratio = penalty_factors[3]
+    estimator.penalty_factor_inestable_system = penalty_factors[4]
+    estimator.penalty_factor_mse = penalty_factors[5]
+    estimator.penalty_factor_roughness_X = penalty_factors[6]
+    estimator.penalty_factor_roughness_Y = penalty_factors[7]
+    
+    parameters = SSMParameters()
+    parameters.F = F0
+    if F0 is not None:
+        parameters.lat_dim = _nrows(F0)
+    parameters.H = H0
+    if H0 is not None:
+        parameters.lat_dim = _ncols(H0)
+    parameters.Q = Q0
+    if Q0 is not None:
+        parameters.lat_dim = _ncols(Q0)
+    parameters.R = R0
+    parameters.X0 = X00
+    if X00 is not None:
+        parameters.lat_dim = _nrows(X00)
+    parameters.P0 = P00
+    if P00 is not None:
+        parameters.lat_dim = _ncols(P00)
+    if lat_dim is not None:
+        parameters.lat_dim = lat_dim
+    parameters.obs_dim = _nrows(Y)
+    parameters.obs_dim = _nrows(Y)
+    parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
+    estimator.set_parameters(Y, parameters)
+    estimator.estimate_parameters()
+    ks = estimator.smoother()
+    ks.smooth()
+    return ks, estimator.loglikelihood_record
+
+def _test_pure_pso_3():
+    params = _create_params_ones_kx1([-50], [10])
+    x, y = params.simulate(1000)
+    ks, records = estimate_using_pso(y,
+        estimates="F H Q R X0 P0",
+        F0=params.F, H0=params.H, Q0=params.Q, R0=params.R, X00=params.X0, P00=params.P0,
+        min_iterations=5, max_iterations=30, min_improvement=0.01, lat_dim=None,
+        sample_size=30, population_size=50,
+        #penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+    )
+    neoparams = ks.parameters
+    #print(records)
+    #neoparams.show()
+    #params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+
+def _test_pure_pso_4():
+    params = _create_params_ones_kx1([-50], [10])
+    x, y = params.simulate(1000)
+    ks, records = estimate_using_pso(y,
+        estimates="F H Q R X0 P0",
+        F0=params.F, H0=params.H, Q0=params.Q, R0=params.R, X00=params.X0, P00=params.P0,
+        min_iterations=10, max_iterations=20, min_improvement=0.01, lat_dim=None,
+        sample_size=10, population_size=100,
+        #penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+    )
+    neoparams = ks.parameters
+    #print(records)
+    #neoparams.show()
+    #params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+
+
+#####################################################################
+# LSE Heuristic SSM Estimator
+#####################################################################
+class LSEHeuristicEstimatorParticle(PSOHeuristicEstimatorParticle):
+    def __init__(self):
+        super().__init__()
+    
+    def improve_params(self, Y, index=0):
+        self.params.show(); print()
+        ks = kalman_smoother_from_parameters(Y, self.params.copy())
+        X = ks.Xs()
+        if self.estimate_H:
+            # Y = H X + N(0, R)
+            # <H> = Y * X' * inv(X * X')' 
+            self.params.H = _dot(Y, _t(X) * _t(_inv(_dot(X, _t(X)))))
+        if self.estimate_R:
+            # <R> = var(Y - H X)
+            self.params.R = _covariance_matrix_estimation(Y - _dot(self.params.H, X))
+        if self.estimate_F:
+            # X[1..T] = F X[0..T-1] + N(0, R)
+            # <F> = X1 * X0' * inv(X0 * X0')'
+            X0 = _head_cols(X)
+            X1 = _tail_cols(X)
+            self.params.F = _dot(X1, _t(X0), _t(_inv(_dot(X0, _t(X0)))))
+        inv_H = _inv(self.params.H)
+        if self.estimate_X0:
+            # Y[0] = H X[0] + N(0, R)
+            # <X[0]> = inv(H) Y[0]
+            X0 = _col(X, 0)#_dot(inv_H, _col(Y, 0))
+            inv_F = _inv(self.params.F)
+            # IMPROVE!
+            for _ in range(index):
+                X0 = _dot(inv_F, X0)
+            self.params.X0 = X0
+        if self.estimate_P0:
+            # <X[0]> = inv(H) Y[0] => VAR<X[0]> = inv(H) var(Y[0]) inv(H)' 
+            # P[0] = inv(H) R inv(H)'
+            self.params.P0 = _dot(inv_H, self.params.R, _t(inv_H))
+        if self.estimate_Q:
+            # <Q> = var(X1 - F X0)
+            self.params.Q = _covariance_matrix_estimation(X1 - _dot(self.params.F, X0))
+        self.params.show()
+        #sys.exit(0)
+    
+    def evaluate(self, Y, index=0):
+        super().evaluate(Y, index)
+        prev_metric = self.metric
+        prev_parameters = self.params.copy()
+        super().evaluate(Y, index)
+        if prev_metric > self.metric:
+            self.metric = prev_metric
+            self.params.copy_from(prev_parameters)
+
+class LSEHeuristicEstimator(PurePSOHeuristicEstimator):
+    def __init__(self):
+        super().__init__()
+
+    def _create_particle(self):
+        return LSEHeuristicEstimatorParticle()
+
+def _test_pure_lse_pso_1():
+    params_orig = _create_params_ones_kx1([-50], [10])
+    params = _create_params_ones_kx1([-50], [10])
+    params.X0[0, 0] += 1
+    params.H[0, 0] -= 0.3
+    params.F[0, 0] -= 0.1
+    #params.show()
+    x, y = params.simulate(100)
+    #print(y)
+    kf = LSEHeuristicEstimator()
+    #kf.penalty_factor_roughness_X = 1
+    #kf.penalty_factor_roughness_Y = 1
+    kf.set_parameters(y, params)
+    kf.estimate_parameters()
+    kf.parameters.show()
+    if DEBUG_HEURISTIC:
+        print(kf.loglikelihood_record)
+    s = kf.smoother()
+    s.smooth()
+    #params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
+    #assert np.round(np.std(kf.Xf()), 2) >= np.round(np.std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)"
+
+def _test_pure_lse_pso_2():
+    params_orig = _create_params_ones_kx1([-50], [10])
+    params = _create_params_ones_kx1([-50], [10])
+    #params.X0[0, 0] += 1
+    #params.H[0, 0] -= 0.3
+    #params.F[0, 0] -= 0.1
+    #params.show()
+    x, y = params.simulate(5000)
+    kf = LSEHeuristicEstimator()
+    #kf.penalty_factor_roughness_X = 1
+    #kf.penalty_factor_roughness_Y = 1
+    kf.set_parameters(y, params)
+    kf.estimate_parameters()
+    #kf.parameters.show()
+    #params.show()
+    #params_orig.show()
+    s = kf.smoother()
+    s.smooth()
+    assert (np.abs(np.mean(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
+    #assert np.round(np.std(kf.Xf()), 2) >= np.round(np.std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)"
+
+
+# [[export]]
+def estimate_using_lse_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X00=None, P00=None, min_iterations=5, max_iterations=20, min_improvement=0.01, lat_dim=None, sample_size=30, population_size=50, penalty_factors=(0.5, 0.5, 0.5, 0.5, 1, 0.25, 2.0, 2.0)):
+    estimator = LSEHeuristicEstimator()
+    estimator.Y = Y
+    estimator.estimate_F = "F" in estimates
+    estimator.estimate_H = "H" in estimates
+    estimator.estimate_Q = "Q" in estimates
+    estimator.estimate_R = "R" in estimates
+    estimator.estimate_X0 = "X0" in estimates
+    estimator.estimate_P0 = "P0" in estimates
+    
+    estimator.sample_size = sample_size
+    estimator.population_size = population_size
+    estimator.penalty_factor_low_variance_Q = penalty_factors[0]
+    estimator.penalty_factor_low_variance_R = penalty_factors[1]
+    estimator.penalty_factor_low_variance_P0 = penalty_factors[2]
+    estimator.penalty_factor_low_std_mean_ratio = penalty_factors[3]
+    estimator.penalty_factor_inestable_system = penalty_factors[4]
+    estimator.penalty_factor_mse = penalty_factors[5]
+    estimator.penalty_factor_roughness_X = penalty_factors[6]
+    estimator.penalty_factor_roughness_Y = penalty_factors[7]
+    
+    parameters = SSMParameters()
+    parameters.F = F0
+    if F0 is not None:
+        parameters.lat_dim = _nrows(F0)
+    parameters.H = H0
+    if H0 is not None:
+        parameters.lat_dim = _ncols(H0)
+    parameters.Q = Q0
+    if Q0 is not None:
+        parameters.lat_dim = _ncols(Q0)
+    parameters.R = R0
+    parameters.X0 = X00
+    if X00 is not None:
+        parameters.lat_dim = _nrows(X00)
+    parameters.P0 = P00
+    if P00 is not None:
+        parameters.lat_dim = _ncols(P00)
+    if lat_dim is not None:
+        parameters.lat_dim = lat_dim
+    parameters.obs_dim = _nrows(Y)
+    parameters.obs_dim = _nrows(Y)
+    parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
+    estimator.set_parameters(Y, parameters)
+    estimator.estimate_parameters()
+    ks = estimator.smoother()
+    ks.smooth()
+    return ks, estimator.loglikelihood_record
+
+def _test_pure_lse_pso_3():
+    params = _create_params_ones_kx1([-50], [10])
+    x, y = params.simulate(1000)
+    ks, records = estimate_using_lse_pso(y,
+        estimates="F H Q R X0 P0",
+        F0=params.F, H0=params.H, Q0=params.Q, R0=params.R, X00=params.X0, P00=params.P0,
+        min_iterations=5, max_iterations=30, min_improvement=0.01, lat_dim=None,
+        sample_size=30, population_size=50,
+        #penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+    )
+    neoparams = ks.parameters
+    #print(records)
+    #neoparams.show()
+    #params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+
+def _test_pure_lse_pso_4():
+    params = _create_params_ones_kx1([-50], [10])
+    x, y = params.simulate(1000)
+    ks, records = estimate_using_lse_pso(y,
+        estimates="F H Q R X0 P0",
+        F0=params.F, H0=params.H, Q0=params.Q, R0=params.R, X00=params.X0, P00=params.P0,
+        min_iterations=10, max_iterations=20, min_improvement=0.01, lat_dim=None,
+        sample_size=10, population_size=100,
+        #penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+    )
+    neoparams = ks.parameters
+    #print(records)
+    #neoparams.show()
+    #params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+
+
+
+#####################################################################
+# EM Heuristic SSM Estimator
+#####################################################################
+class EMHeuristicEstimatorParticle(PSOHeuristicEstimatorParticle):
+    def __init__(self):
+        super().__init__()
+    
+    def improve_params(self, Y):
+        subestimator = ExpectationMaximizationEstimator()
+        subestimator.Y = Y
+        subestimator.estimate_F = self.estimate_F
+        subestimator.estimate_H = self.estimate_H
+        subestimator.estimate_Q = self.estimate_Q
+        subestimator.estimate_R = self.estimate_R
+        subestimator.estimate_X0 = self.estimate_X0
+        subestimator.estimate_P0 = self.estimate_P0
+        subestimator.parameters = self.params
+        #estimator.parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
+        subestimator.estimation_iteration()
+    
+    def evaluate(self, Y, index=0):
+        super().evaluate(Y, index)
+        prev_metric = self.metric
+        prev_parameters = self.params.copy()
+        super().evaluate(Y, index)
+        if prev_metric > self.metric:
+            self.metric = prev_metric
+            self.params.copy_from(prev_parameters)
+
+class EMHeuristicEstimator(PurePSOHeuristicEstimator):
+    def __init__(self):
+        super().__init__()
+
+    def _create_particle(self):
+        return EMHeuristicEstimatorParticle()
+
+
+def test_pure_em_pso_1():
+    params_orig = _create_params_ones_kx1([-50], [10])
+    params = _create_params_ones_kx1([-50], [10])
+    params.X0[0, 0] += 1
+    params.H[0, 0] -= 0.3
+    params.F[0, 0] -= 0.1
+    #params.show()
+    x, y = params.simulate(100)
+    kf = EMHeuristicEstimator()
+    #kf.penalty_factor_roughness_X = 1
+    #kf.penalty_factor_roughness_Y = 1
+    kf.set_parameters(y, params)
+    kf.estimate_parameters()
+    kf.parameters.show()
+    if DEBUG_HEURISTIC:
+        print(kf.loglikelihood_record)
+    s = kf.smoother()
+    s.smooth()
+    #params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
+    #assert np.round(np.std(kf.Xf()), 2) >= np.round(np.std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)"
+
+def test_pure_em_pso_2():
+    params_orig = _create_params_ones_kx1([-50], [10])
+    params = _create_params_ones_kx1([-50], [10])
+    #params.X0[0, 0] += 1
+    #params.H[0, 0] -= 0.3
+    #params.F[0, 0] -= 0.1
+    #params.show()
+    x, y = params.simulate(100)
+    kf = EMHeuristicEstimator()
+    #kf.penalty_factor_roughness_X = 1
+    #kf.penalty_factor_roughness_Y = 1
+    kf.set_parameters(y, params)
+    kf.estimate_parameters()
+    #kf.parameters.show()
+    #params.show()
+    #params_orig.show()
+    s = kf.smoother()
+    s.smooth()
+    assert (np.abs(np.mean(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)"
+    assert (np.abs(np.mean(params.X0) - np.mean(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)"
+    assert (np.abs(np.mean(params.F) - np.mean(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)"
+    assert (np.abs(np.mean(params.H) - np.mean(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
+    #assert np.round(np.std(kf.Xp()), 2) >= np.round(np.std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)"
+    #assert np.round(np.std(kf.Xf()), 2) >= np.round(np.std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)"
+
+
+
+# [[export]]
+def estimate_using_em_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X00=None, P00=None, min_iterations=5, max_iterations=20, min_improvement=0.01, lat_dim=None, sample_size=30, population_size=50, penalty_factors=(0.5, 0.5, 0.5, 0.5, 1, 0.25, 2.0, 2.0)):
+    estimator = EMHeuristicEstimator()
+    estimator.Y = Y
+    estimator.estimate_F = "F" in estimates
+    estimator.estimate_H = "H" in estimates
+    estimator.estimate_Q = "Q" in estimates
+    estimator.estimate_R = "R" in estimates
+    estimator.estimate_X0 = "X0" in estimates
+    estimator.estimate_P0 = "P0" in estimates
+    
+    estimator.sample_size = sample_size
+    estimator.population_size = population_size
+    estimator.penalty_factor_low_variance_Q = penalty_factors[0]
+    estimator.penalty_factor_low_variance_R = penalty_factors[1]
+    estimator.penalty_factor_low_variance_P0 = penalty_factors[2]
+    estimator.penalty_factor_low_std_mean_ratio = penalty_factors[3]
+    estimator.penalty_factor_inestable_system = penalty_factors[4]
+    estimator.penalty_factor_mse = penalty_factors[5]
+    estimator.penalty_factor_roughness_X = penalty_factors[6]
+    estimator.penalty_factor_roughness_Y = penalty_factors[7]
+    
+    parameters = SSMParameters()
+    parameters.F = F0
+    if F0 is not None:
+        parameters.lat_dim = _nrows(F0)
+    parameters.H = H0
+    if H0 is not None:
+        parameters.lat_dim = _ncols(H0)
+    parameters.Q = Q0
+    if Q0 is not None:
+        parameters.lat_dim = _ncols(Q0)
+    parameters.R = R0
+    parameters.X0 = X00
+    if X00 is not None:
+        parameters.lat_dim = _nrows(X00)
+    parameters.P0 = P00
+    if P00 is not None:
+        parameters.lat_dim = _ncols(P00)
+    if lat_dim is not None:
+        parameters.lat_dim = lat_dim
+    parameters.obs_dim = _nrows(Y)
+    parameters.obs_dim = _nrows(Y)
+    parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
+    estimator.set_parameters(Y, parameters)
+    estimator.estimate_parameters()
+    ks = estimator.smoother()
+    ks.smooth()
+    return ks, estimator.loglikelihood_record
+
+def _test_pure_lse_pso_3():
+    params = _create_params_ones_kx1([-50], [10])
+    x, y = params.simulate(1000)
+    ks, records = estimate_using_em_pso(y,
+        estimates="F H Q R X0 P0",
+        F0=params.F, H0=params.H, Q0=params.Q, R0=params.R, X00=params.X0, P00=params.P0,
+        min_iterations=5, max_iterations=30, min_improvement=0.01, lat_dim=None,
+        sample_size=30, population_size=50,
+        #penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+    )
+    neoparams = ks.parameters
+    #print(records)
+    #neoparams.show()
+    #params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+
+def _test_pure_em_pso_4():
+    params = _create_params_ones_kx1([-50], [10])
+    x, y = params.simulate(1000)
+    ks, records = estimate_using_lse_pso(y,
+        estimates="F H Q R X0 P0",
+        F0=params.F, H0=params.H, Q0=params.Q, R0=params.R, X00=params.X0, P00=params.P0,
+        min_iterations=10, max_iterations=20, min_improvement=0.01, lat_dim=None,
+        sample_size=10, population_size=100,
+        #penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+    )
+    neoparams = ks.parameters
+    #print(records)
+    #neoparams.show()
+    #params.show()
+    #params_orig.show()
+    assert (np.abs(np.mean(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean"
+    assert (np.abs(np.mean(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean"
+    assert (np.abs(np.mean(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean"
+
+
 if __name__ == "__main__":
     import pytest
-    #pytest.main(sys.argv[0])
-    test_pure_pso_1()
+    pytest.main(sys.argv[0])
+    #_test_pure_pso_1()
 
 # For testing run
 # pip install pytest
