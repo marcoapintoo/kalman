@@ -9,6 +9,8 @@ import scipy.stats
 # Sorry if you expected other thing
 # The same tests will be translated in C++
 
+resourceParams = {"trace.intermediates": False,}
+
 #####################################################################
 # Stats helpers
 #####################################################################
@@ -119,7 +121,7 @@ def test_create_noised_ones():
     m = _create_noised_ones(10, 10)
     for i in range(10):
         for j in range(10):
-            assert np.abs(m[i][j] - 1) < 0.1
+            assert np.abs(m[i][j] - 1) < 0.18
 
 def test_create_noised_zeros():
     m = _create_noised_zeros(1, 1)
@@ -127,7 +129,7 @@ def test_create_noised_zeros():
     m = _create_noised_zeros(10, 10)
     for i in range(10):
         for j in range(10):
-            assert np.abs(m[i][j] - 0) < 0.1
+            assert np.abs(m[i][j] - 0) < 0.18
 
 def test_create_noised_diag():
     m = _create_noised_diag(1, 1)
@@ -136,9 +138,9 @@ def test_create_noised_diag():
     for i in range(10):
         for j in range(10):
             if i == j:
-                assert np.abs(m[i][j] - 1) < 0.1
+                assert np.abs(m[i][j] - 1) < 0.18
             else:
-                assert np.abs(m[i][j] - 0) < 0.1
+                assert np.abs(m[i][j] - 0) < 0.18
 
 def _sum_slices(X):
     return np.sum(X, axis=2)
@@ -573,27 +575,60 @@ def test_mean_squared_error():
     ])
     assert _mean_squared_error(Y, Ypred) == 3.0
 
-def _measure_roughness(X):
+def _measure_roughness_original(X):
     # https://stats.stackexchange.com/questions/24607/how-to-measure-smoothness-of-a-time-series-in-r
     diffX = np.diff(X, axis=1)
     return np.round(np.mean(np.std(diffX, axis=1) / (np.abs(np.mean(diffX, axis=1)) + 1e-3)), 2)
 
+def _measure_roughness_proposed(y, M=10):
+    cols = y.shape[0]//M
+    y = y[: cols * M].reshape(cols, M)
+    ystd = (y - y.mean(axis=1).reshape(-1, 1)) / y.std(axis=1).reshape(-1, 1)
+    ystd = np.nan_to_num(ystd) #only nan if 0/0, for us = 0
+    ystd[np.isinf(ystd)] = 0 #only nan if x/0, for us = 0
+    ystd[np.isinf(-ystd)] = 0 #only nan if x/0, for us = 0
+    ystd = np.diff(ystd, axis=1).ravel()
+    #plt.plot(ystd.ravel()); plt.show();
+    return np.mean(np.abs(ystd))
+
+def _measure_roughness(X, M=10):
+    return np.mean([_measure_roughness_proposed(X[k, :].ravel(), M) for k in range(X.shape[0])])
+
 def test_measure_roughness():
-    X = np.array([
-        [ 1,  3,  5,  7,  9],
-        [11, 13, 15, 17, 19]
+    X1 = np.array([
+        [57, -21, 71, 45, -9, 52, -90, -13, 3, 99, 
+         -52, -63, -64, -56, -35, -32, 83, 67, -65, 38, 
+         -55, -1, -40, -93, -93, 57, 53, -64, -24, 32, 
+         12, 83, -75, -48, 39, 87, 28, -17, 71, 78, 
+         72, -57, 64, 80, -60, 67, -89, 14, 62, 60, 
+         -4, -19, 18, -4, 10, 51, -51, 74, 2, 15, 
+         -41, 71, -56, 99, -30, -95, -67, -44, 65, -46, 
+         -21, -70, 95, 72, 41, 11, -98, -72, -70, 75, 
+         -28, -2, -79, -21, -3, 86, 0, -58, 79, 14, -96, 
+         -63, 84, -100, -55, 85, -94, 53, -49, 27],
+        [12, 50, 66, 79, 52, 81, -62, 79, 64, -34, 
+         -26, -88, 69, 58, -15, -19, -89, 23, -27, -82, 
+         -16, 16, -46, 99, -48, 31, 61, 46, 2, -66, 
+         -41, -32, -1, 31, 52, -56, -14, -26, 48, 30, 
+         63, 28, 61, 56, -27, 32, -52, -86, 74, -55, 
+         67, 97, -30, 24, -42, -67, -99, -40, 49, -19,
+         -61, 55, 79, -47, -17, -52, 88, 78, -65, 90, 
+         -95, 50, -96, -21, 73, -22, -5, -45, 55, 86, 
+         -39, 79, -25, -79, 64, 38, 18, -8, 49, -48, 
+         -93, -67, -88, -4, 15, -90, -67, 74, 68, -1]
     ])
-    assert _measure_roughness(X) == 0.0
-    X = np.array([
-        [ 1, -1,  5,  3,  9],
-        [11, 17, 15, 21, 19]
-    ])
-    assert _measure_roughness(X) == 2.0
-    X = np.array([
-         [1,  0,  1,  0,  1],
-         [10, 8, 10, 8, 10]
-    ])
-    assert _measure_roughness(X) == 1500.0
+    X = X1
+    assert np.abs(_measure_roughness(X) - 1.25) < 0.1
+    #assert _measure_roughness(X) == 0.0
+    X = np.ones(X.shape)
+    assert np.abs(_measure_roughness(X) - 0) < 0.1
+    #assert _measure_roughness(X) == 2.0
+    X = 10 * X1
+    assert np.abs(_measure_roughness(X) - 1.25) < 0.1
+    X = 1 + 0.0002 * X1
+    X[0, :] = 10
+    assert np.abs(_measure_roughness(X) - 0.6) < 0.1
+    #assert _measure_roughness(X) == 1500.0
 
 
 
@@ -845,7 +880,7 @@ class KalmanSmoother(KalmanFilter):
         while k >= 0:
             A = _dot(_slice(self.Pf(), k), _t(self.F()), _inv(_slice(self.Pp(), k + 1)))
             _no_finite_to_zero(A)
-            _set_slice(self.Ps(), k, _slice(self.Pf(), k) - _dot(A, _col(self.Xs(), k + 1) - _col(self.Xf(), k + 1), _t(A))) #Ghahramani
+            _set_slice(self.Ps(), k, _slice(self.Pf(), k) - _dot(A, _slice(self.Ps(), k + 1) - _slice(self.Pf(), k + 1), _t(A))) #Ghahramani
             _set_col(self.Xs(), k, _col(self.Xf(), k) + _dot(A, _col(self.Xs(), k + 1) - _col(self.Xf(), k + 1)))
             if k == self.T() - 2:
                 G = _dot(_slice(self.Pp(), k + 1), _t(self.H()), _inv(_dot(self.H(), _slice(self.Pp(), k + 1), _t(self.H())) + self.R()))
@@ -1130,6 +1165,11 @@ def estimate_using_em(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X00=N
         estimator.parameters.lat_dim = lat_dim
     estimator.parameters.obs_dim = _nrows(Y)
     estimator.parameters.obs_dim = _nrows(Y)
+    #
+    estimator.min_iterations = min_iterations
+    estimator.max_iterations = max_iterations
+    estimator.min_improvement = min_improvement
+    #
     estimator.parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
     estimator.estimate_parameters()
     ks = estimator.smoother()
@@ -1156,7 +1196,7 @@ def test_expectation_maximization_3():
 # PSO Heuristic SSM Estimator
 #####################################################################
 
-DEBUG_HEURISTIC = True
+resourceParams["trace.intermediates"] = True
 
 class PSOHeuristicEstimatorParticle:
     def __init__(self):
@@ -1291,7 +1331,7 @@ class PSOHeuristicEstimatorParticle:
         self.metric -= self.penalty_factor_mse * self._penalize_mean_squared_error(Y, ks)
         self.metric -= self.penalty_factor_roughness_X * self._penalize_roughness(ks.Xs())
         self.metric -= self.penalty_factor_roughness_Y * self._penalize_roughness(Y)
-        if DEBUG_HEURISTIC:
+        if resourceParams["trace.intermediates"]:
             print("*****",
                 self.metric,
                 "====",
@@ -1335,7 +1375,7 @@ class PSOHeuristicEstimatorParticle:
         self.metric -= self.penalty_factor_mse * mean_squared_error_penalty
         self.metric -= self.penalty_factor_roughness_X * roughness_X_penalty
         self.metric -= self.penalty_factor_roughness_Y * roughness_Y_penalty
-        if DEBUG_HEURISTIC:
+        if resourceParams["trace.intermediates"]:
             print("*****",
                 self.metric,
                 "====",
@@ -1495,7 +1535,7 @@ class PurePSOHeuristicEstimator:
             #print("."*80); self.particles[i].params.show()
         self.loglikelihood_record.append(self.best_particle.best_metric)
         self.parameters.copy_from(self.best_particle.best_params)
-        if DEBUG_HEURISTIC:
+        if resourceParams["trace.intermediates"]:
             ks = kalman_smoother_from_parameters(self.Y, self.best_particle.best_params)
             print(" >>>> ", self.best_particle.metric,
                 "====",
@@ -1531,7 +1571,7 @@ def _test_pure_pso_1():
     kf.set_parameters(y, params)
     #kf.estimate_parameters()
     kf.parameters.show()
-    if DEBUG_HEURISTIC:
+    if resourceParams["trace.intermediates"]:
         print(kf.loglikelihood_record)
     s = kf.smoother()
     s.smooth()
@@ -1595,6 +1635,9 @@ def estimate_using_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X00=
     
     estimator.sample_size = sample_size
     estimator.population_size = population_size
+    estimator.min_iterations = min_iterations
+    estimator.max_iterations = max_iterations
+    estimator.min_improvement = min_improvement
     
     if isinstance(penalty_factors, dict):
         penalty_factors = [
@@ -1758,7 +1801,7 @@ def _test_pure_lse_pso_1():
     kf.set_parameters(y, params)
     kf.estimate_parameters()
     kf.parameters.show()
-    if DEBUG_HEURISTIC:
+    if resourceParams["trace.intermediates"]:
         print(kf.loglikelihood_record)
     s = kf.smoother()
     s.smooth()
@@ -1822,6 +1865,9 @@ def estimate_using_lse_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, 
     
     estimator.sample_size = sample_size
     estimator.population_size = population_size
+    estimator.min_iterations = min_iterations
+    estimator.max_iterations = max_iterations
+    estimator.min_improvement = min_improvement
 
     if isinstance(penalty_factors, dict):
         penalty_factors = [
@@ -1971,7 +2017,7 @@ def test_pure_em_pso_1():
     kf.set_parameters(y, params)
     kf.estimate_parameters()
     kf.parameters.show()
-    if DEBUG_HEURISTIC:
+    if resourceParams["trace.intermediates"]:
         print(kf.loglikelihood_record)
     s = kf.smoother()
     s.smooth()
@@ -2036,6 +2082,9 @@ def estimate_using_em_pso(Y, estimates="", F0=None, H0=None, Q0=None, R0=None, X
     
     estimator.sample_size = sample_size
     estimator.population_size = population_size
+    estimator.min_iterations = min_iterations
+    estimator.max_iterations = max_iterations
+    estimator.min_improvement = min_improvement
 
     if isinstance(penalty_factors, dict):
         penalty_factors = [
