@@ -449,7 +449,10 @@ class SSMParameters:
         return np.sum(np.abs(np.linalg.eig(X)[0])) ** 3
 
     def _penalize_mean_squared_error(self, Y, ks):
-        return _mean_squared_error(Y, ks.Ys())
+        ##return _mean_squared_error(Y, ks.Ys())
+        mse = lambda a, b: np.mean((a.ravel() - b.ravel()) ** 2)
+        Ypred = ks.Ys()
+        return np.max([mse(Y[k, :], Ypred[k, :]) for k in range(_nrows(Y))])
     
     def _penalize_roughness(self, X):
         return _measure_roughness(X)
@@ -1395,6 +1398,7 @@ class PSOHeuristicEstimatorParticle:
         self.estimate_P0 = est_P0
         #!###print("====>", self.estimate_F, self.estimate_H, self.estimate_Q, self.estimate_R, self.estimate_X0, self.estimate_P0,)
 
+    #def __move_fix(self, best_particle):
     def move(self, best_particle):
         #print("==**>", self.estimate_F, self.estimate_H, self.estimate_Q, self.estimate_R, self.estimate_X0, self.estimate_P0,)
         move_to_self_best = 2 * np.random.uniform()
@@ -1415,6 +1419,29 @@ class PSOHeuristicEstimatorParticle:
             self.params.X0 += move_to_self_best * (self.best_params.X0 - self.params.X0) + move_to_global_best * (best_particle.best_params.X0 - self.params.X0)
         if self.estimate_P0:
             self.params.P0 += move_to_self_best * (self.best_params.P0 - self.params.P0) + move_to_global_best * (best_particle.best_params.P0 - self.params.P0)
+            self.params.P0 = 0.5 * (self.params.P0 + _t(self.params.P0))
+            _set_diag_values_positive(self.params.P0)
+    
+    def move_flexible(self, best_particle):
+        #print("==**>", self.estimate_F, self.estimate_H, self.estimate_Q, self.estimate_R, self.estimate_X0, self.estimate_P0,)
+        move_to_self_best = lambda: 2 * np.random.uniform()
+        move_to_global_best = lambda: 2 * np.random.uniform()
+        if self.estimate_F:
+            self.params.F += move_to_self_best() * (self.best_params.F - self.params.F) + move_to_global_best() * (best_particle.best_params.F - self.params.F)
+        if self.estimate_H:
+            self.params.H += move_to_self_best() * (self.best_params.H - self.params.H) + move_to_global_best() * (best_particle.best_params.H - self.params.H)
+        if self.estimate_Q:
+            self.params.Q += move_to_self_best() * (self.best_params.Q - self.params.Q) + move_to_global_best() * (best_particle.best_params.Q - self.params.Q)
+            self.params.Q = 0.5 * (self.params.Q + _t(self.params.Q))
+            _set_diag_values_positive(self.params.Q)
+        if self.estimate_R:
+            self.params.R += move_to_self_best() * (self.best_params.R - self.params.R) + move_to_global_best() * (best_particle.best_params.R - self.params.R)
+            self.params.R = 0.5 * (self.params.R + _t(self.params.R))
+            _set_diag_values_positive(self.params.R)
+        if self.estimate_X0:
+            self.params.X0 += move_to_self_best() * (self.best_params.X0 - self.params.X0) + move_to_global_best() * (best_particle.best_params.X0 - self.params.X0)
+        if self.estimate_P0:
+            self.params.P0 += move_to_self_best() * (self.best_params.P0 - self.params.P0) + move_to_global_best() * (best_particle.best_params.P0 - self.params.P0)
             self.params.P0 = 0.5 * (self.params.P0 + _t(self.params.P0))
             _set_diag_values_positive(self.params.P0)
     

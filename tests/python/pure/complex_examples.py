@@ -193,7 +193,48 @@ def noising_params(params, factor=0.2):
 ###############################################################################
 # TEST BASE
 ###############################################################################
-def test_estimator(type_estimator, X, Y, params, estimates="F H Q R X0 P0", sample_size=3000, min_iterations=5, max_iterations=20, min_improvement=0.01, penalty_factors={}):
+def test_metaestimator(type_estimator, X, Y, params, estimates="F H Q R X0 P0", sample_size=3000, min_iterations=5, max_iterations=20, min_improvement=0.01, population_size=10, penalty_factors={}):
+    neo_params = params.copy()
+    neo_params.Q = np.eye(*neo_params.Q.shape) * 0.1
+    neo_params.R = np.eye(*neo_params.R.shape) * 0.1
+    neo_params.P0 = np.eye(*neo_params.P0.shape) * 0.1
+    neo_params2, _ = test_estimator(
+        type_estimator,
+        X, Y, neo_params,
+        estimates=' '.join(w for w in ["F", "H", "X0"] if w in estimates),
+        sample_size=sample_size, 
+        min_iterations=min_iterations,
+        max_iterations=max_iterations, 
+        min_improvement=min_improvement, 
+        population_size=population_size, 
+        penalty_factors=penalty_factors
+    )
+    neo_params2 = neo_params2.parameters
+    neo_params3, _ = test_estimator(
+        type_estimator,
+        X, Y, neo_params2,
+        estimates=' '.join(w for w in ["Q", "R", "P0"] if w in estimates),
+        sample_size=sample_size, 
+        min_iterations=min_iterations,
+        max_iterations=max_iterations, 
+        min_improvement=min_improvement, 
+        population_size=population_size, 
+        penalty_factors=penalty_factors
+    )
+    neo_params3 = neo_params3.parameters
+    return test_estimator(
+        type_estimator,
+        X, Y, neo_params3,
+        estimates=estimates,
+        sample_size=sample_size, 
+        min_iterations=min_iterations,
+        max_iterations=max_iterations, 
+        min_improvement=min_improvement, 
+        population_size=population_size, 
+        penalty_factors=penalty_factors
+    )
+
+def test_estimator(type_estimator, X, Y, params, estimates="F H Q R X0 P0", sample_size=3000, min_iterations=5, max_iterations=20, min_improvement=0.01, population_size=10, penalty_factors={}):
     np.random.seed(42)
 
     estimators = {
@@ -206,7 +247,7 @@ def test_estimator(type_estimator, X, Y, params, estimates="F H Q R X0 P0", samp
     pso_args = dict(
         #lat_dim=None,
         sample_size=sample_size,
-        population_size=10,
+        population_size=population_size,
         penalty_factors={
             "low_std_mean_ratio": penalty_factors.get("low_std_mean_ratio", 0.01),
             "low_variance_Q": penalty_factors.get("low_variance_Q", 0.05),
