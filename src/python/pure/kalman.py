@@ -1533,7 +1533,7 @@ class PurePSOHeuristicEstimator:
             self.best_particle.copy_best_from(self.particles[i])
             self.particles[i].move(self.best_particle)
             #print("."*80); self.particles[i].params.show()
-        self.loglikelihood_record.append(self.best_particle.best_metric)
+        self.loglikelihood_record.append(self.best_particle.best_loglikelihood)
         self.parameters.copy_from(self.best_particle.best_params)
         if resourceParams["trace.intermediates"]:
             ks = kalman_smoother_from_parameters(self.Y, self.best_particle.best_params)

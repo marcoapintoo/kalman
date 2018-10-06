@@ -160,7 +160,7 @@ def create_true_params_2x3():
     return params, X, Y
 
 
-def initial_parameters(type):
+def initial_parameters(type, factor_noise=0.2):
     if type == "1x3":
         params, X, Y = create_true_params_1x3()
     elif type == "1x3_true":
@@ -168,9 +168,13 @@ def initial_parameters(type):
     elif type == "2x3":
         params, X, Y = create_true_params_2x3()
     plot_data(X, Y)
-    noised_params = noising_params(params)
-    print("** TRUE  :", params.performance_parameters_line(Y))
-    print("** NOISED:", noised_params.performance_parameters_line(Y))
+    noised_params = noising_params(params, factor=factor_noise)
+    print("****** TRUE  ******")
+    params.show()
+    print(params.performance_parameters_line(Y))
+    print("****** FALSE  ******")
+    noised_params.show()
+    print(noised_params.performance_parameters_line(Y))
     return X, Y, params, noised_params
 
 def noising_params(params, factor=0.2):
@@ -183,12 +187,11 @@ def noising_params(params, factor=0.2):
     noise_params.X0 = params.X0 + factor * np.random.randn(*params.X0.shape)
     noise_params.P0 = params.P0 + factor * np.random.randn(*params.P0.shape)
     noise_params.set_dimensions(3, 2)
-    noise_params.show()
     return noise_params
 
 
 ###############################################################################
-# PARAMETERS
+# TEST BASE
 ###############################################################################
 def test_estimator(type_estimator, X, Y, params, estimates="F H Q R X0 P0", sample_size=3000, min_iterations=5, max_iterations=20, min_improvement=0.01, penalty_factors={}):
     np.random.seed(42)
