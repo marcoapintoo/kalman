@@ -848,6 +848,8 @@ def test_filter_2():
 #####################################################################
 
 class KalmanSmoother(KalmanFilter):
+    type_of_likelihood = "smooth"
+    
     def __init__(self):
         super().__init__()
         self.smoothed_estimates = SSMEstimated()
@@ -860,7 +862,7 @@ class KalmanSmoother(KalmanFilter):
 
     def Cs(self): return self.smoothed_estimates.ACV1
 
-    def loglikelihood(self):
+    def loglikelihood_smooth(self):
         log_likelihood = 0
         for k in range(1, self.T()):
             Sigma_k = _dot(self.H(), _slice(self.Ps(), k-1), _t(self.H())) + self.R()
@@ -868,6 +870,37 @@ class KalmanSmoother(KalmanFilter):
             if np.isfinite(current_likelihood):
                 log_likelihood += current_likelihood
         return log_likelihood / (self.T() - 1)
+    
+    def loglikelihood_filter(self):
+        #http://support.sas.com/documentation/cdl/en/imlug/65547/HTML/default/viewer.htm#imlug_timeseriesexpls_sect035.htm
+        log_likelihood = 0
+        for k in range(1, self.T()):
+            Sigma_k = _dot(self.H(), _slice(self.Pf(), k-1), _t(self.H())) + self.R()
+            current_likelihood = _mvn_logprobability(_col(self.Y(), k), _dot(self.H(), _col(self.Xf(), k)), Sigma_k)
+            if np.isfinite(current_likelihood):
+                log_likelihood += current_likelihood
+        return log_likelihood / (self.T() - 1)
+    
+    def loglikelihood_qfunction(self):
+        log_likelihood = 0#_mvn_logprobability(self.X0(), self.X0(), self.P0()) <= 0
+        for k in range(1, self.T()):
+            current_likelihood = _mvn_logprobability(_col(self.Xs(), k), _dot(self.F(), _col(self.Xs(), k - 1)), self.Q())
+            if np.isfinite(current_likelihood): #Temporal patch
+                log_likelihood += current_likelihood
+        for k in range(0, self.T()):
+            current_likelihood = _mvn_logprobability(_col(self.Y(), k), _dot(self.H(), _col(self.Xs(), k)), self.R())
+            if np.isfinite(current_likelihood):
+                log_likelihood += current_likelihood
+        return log_likelihood / (self.T() - 1)
+    
+    def loglikelihood(self):
+        if self.type_of_likelihood == "filter":
+            return self.loglikelihood_filter()
+        if self.type_of_likelihood == "smooth":
+            return self.loglikelihood_filter()
+        if self.type_of_likelihood == "function-q":
+            return self.loglikelihood_filter()
+        raise ValueError("Wrong loglikelihood type!")
     
     def smooth(self, filter=True):
         if filter:
@@ -1761,7 +1794,7 @@ class LSEHeuristicEstimatorParticle(PSOHeuristicEstimatorParticle):
         super().__init__()
     
     def improve_params(self, Y, index=0):
-        self.params.show(); print()
+        #self.params.show(); print()
         ks = kalman_smoother_from_parameters(Y, self.params.copy())
         X = ks.Xs()
         if self.estimate_H:
@@ -1793,14 +1826,17 @@ class LSEHeuristicEstimatorParticle(PSOHeuristicEstimatorParticle):
             self.params.P0 = _dot(inv_H, self.params.R, _t(inv_H))
         if self.estimate_Q:
             # <Q> = var(X1 - F X0)
+            X0 = _head_cols(X)
+            X1 = _tail_cols(X)
             self.params.Q = _covariance_matrix_estimation(X1 - _dot(self.params.F, X0))
-        self.params.show()
+        #self.params.show()
         #sys.exit(0)
     
     def evaluate(self, Y, index=0):
         super().evaluate(Y, index)
         prev_metric = self.metric
         prev_parameters = self.params.copy()
+        self.improve_params(Y, index)
         super().evaluate(Y, index)
         if prev_metric > self.metric:
             self.metric = prev_metric
@@ -1991,7 +2027,7 @@ class EMHeuristicEstimatorParticle(PSOHeuristicEstimatorParticle):
     def __init__(self):
         super().__init__()
     
-    def improve_params(self, Y):
+    def improve_params(self, Y, index=0):
         subestimator = ExpectationMaximizationEstimator()
         subestimator.Y = Y
         subestimator.estimate_F = self.estimate_F
@@ -2000,15 +2036,15 @@ class EMHeuristicEstimatorParticle(PSOHeuristicEstimatorParticle):
         subestimator.estimate_R = self.estimate_R
         subestimator.estimate_X0 = self.estimate_X0
         subestimator.estimate_P0 = self.estimate_P0
-        print(
-            "subestimator:",
-            subestimator.estimate_F,
-            subestimator.estimate_H,
-            subestimator.estimate_Q,
-            subestimator.estimate_R,
-            subestimator.estimate_X0,
-            subestimator.estimate_P0,
-        )
+        #print(
+        #    "subestimator:",
+        #    subestimator.estimate_F,
+        #    subestimator.estimate_H,
+        #    subestimator.estimate_Q,
+        #    subestimator.estimate_R,
+        #    subestimator.estimate_X0,
+        #    subestimator.estimate_P0,
+        #)
         subestimator.parameters = self.params
         #estimator.parameters.random_initialize(F0 is None, H0 is None, Q0 is None, R0 is None, X00 is None, P00 is None)
         subestimator.estimation_iteration()
@@ -2017,6 +2053,7 @@ class EMHeuristicEstimatorParticle(PSOHeuristicEstimatorParticle):
         super().evaluate(Y, index)
         prev_metric = self.metric
         prev_parameters = self.params.copy()
+        self.improve_params(Y, index)
         super().evaluate(Y, index)
         if prev_metric > self.metric:
             self.metric = prev_metric
