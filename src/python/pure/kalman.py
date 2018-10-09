@@ -873,6 +873,8 @@ class KalmanSmoother(KalmanFilter):
     
     def loglikelihood_filter(self):
         #http://support.sas.com/documentation/cdl/en/imlug/65547/HTML/default/viewer.htm#imlug_timeseriesexpls_sect035.htm
+        #Why this is better:
+        #https://stats.stackexchange.com/questions/296598/why-is-the-likelihood-in-kalman-filter-computed-using-filter-results-instead-of
         log_likelihood = 0
         for k in range(1, self.T()):
             Sigma_k = _dot(self.H(), _slice(self.Pf(), k-1), _t(self.H())) + self.R()
@@ -917,7 +919,7 @@ class KalmanSmoother(KalmanFilter):
             A = _dot(_slice(self.Pf(), k), _t(self.F()), _inv(_slice(self.Pp(), k + 1)))
             _no_finite_to_zero(A)
             _set_slice(self.Ps(), k, _slice(self.Pf(), k) - _dot(A, _slice(self.Ps(), k + 1) - _slice(self.Pf(), k + 1), _t(A))) #Ghahramani
-            _set_col(self.Xs(), k, _col(self.Xf(), k) + _dot(A, _col(self.Xs(), k + 1) - _col(self.Xf(), k + 1)))
+            _set_col(self.Xs(), k, _col(self.Xf(), k) + _dot(A, _col(self.Xs(), k + 1) - _col(self.Xp(), k + 1)))
             if k == self.T() - 2:
                 G = _dot(_slice(self.Pp(), k + 1), _t(self.H()), _inv(_dot(self.H(), _slice(self.Pp(), k + 1), _t(self.H())) + self.R()))
                 _set_slice(self.Cs(), k, _dot(self.F(), _slice(self.Pf(), k)) - _dot(G, self.H(), self.F(), _slice(self.Pf(), k)))
@@ -1544,7 +1546,7 @@ class PurePSOHeuristicEstimator:
         #
         self.best_particle = self._create_particle()
         self.particles = []
-        parameters.show()
+        #parameters.show()
         for i in range(self.population_size):
             self.particles.append(self._create_particle())
             if i == 0:
@@ -1795,42 +1797,45 @@ class LSEHeuristicEstimatorParticle(PSOHeuristicEstimatorParticle):
     
     def improve_params(self, Y, index=0):
         #self.params.show(); print()
-        ks = kalman_smoother_from_parameters(Y, self.params.copy())
-        X = ks.Xs()
-        if self.estimate_H:
-            # Y = H X + N(0, R)
-            # <H> = Y * X' * inv(X * X')' 
-            self.params.H = _dot(Y, _t(X) * _t(_inv(_dot(X, _t(X)))))
-        if self.estimate_R:
-            # <R> = var(Y - H X)
-            self.params.R = _covariance_matrix_estimation(Y - _dot(self.params.H, X))
-        if self.estimate_F:
-            # X[1..T] = F X[0..T-1] + N(0, R)
-            # <F> = X1 * X0' * inv(X0 * X0')'
-            X0 = _head_cols(X)
-            X1 = _tail_cols(X)
-            self.params.F = _dot(X1, _t(X0), _t(_inv(_dot(X0, _t(X0)))))
-        inv_H = _inv(self.params.H)
-        if self.estimate_X0:
-            # Y[0] = H X[0] + N(0, R)
-            # <X[0]> = inv(H) Y[0]
-            X0 = _col(X, 0)#_dot(inv_H, _col(Y, 0))
-            inv_F = _inv(self.params.F)
-            # IMPROVE!
-            for _ in range(index):
-                X0 = _dot(inv_F, X0)
-            self.params.X0 = X0
-        if self.estimate_P0:
-            # <X[0]> = inv(H) Y[0] => VAR<X[0]> = inv(H) var(Y[0]) inv(H)' 
-            # P[0] = inv(H) R inv(H)'
-            self.params.P0 = _dot(inv_H, self.params.R, _t(inv_H))
-        if self.estimate_Q:
-            # <Q> = var(X1 - F X0)
-            X0 = _head_cols(X)
-            X1 = _tail_cols(X)
-            self.params.Q = _covariance_matrix_estimation(X1 - _dot(self.params.F, X0))
-        #self.params.show()
-        #sys.exit(0)
+        try:
+            ks = kalman_smoother_from_parameters(Y, self.params.copy())
+            X = ks.Xs()
+            if self.estimate_H:
+                # Y = H X + N(0, R)
+                # <H> = Y * X' * inv(X * X')' 
+                self.params.H = _dot(Y, _t(X), _t(_inv(_dot(X, _t(X)))))
+            if self.estimate_R:
+                # <R> = var(Y - H X)
+                self.params.R = _covariance_matrix_estimation(Y - _dot(self.params.H, X))
+            if self.estimate_F:
+                # X[1..T] = F X[0..T-1] + N(0, R)
+                # <F> = X1 * X0' * inv(X0 * X0')'
+                X0 = _head_cols(X)
+                X1 = _tail_cols(X)
+                self.params.F = _dot(X1, _t(X0), _t(_inv(_dot(X0, _t(X0)))))
+            inv_H = _inv(self.params.H)
+            if self.estimate_X0:
+                # Y[0] = H X[0] + N(0, R)
+                # <X[0]> = inv(H) Y[0]
+                X0 = _col(X, 0)#_dot(inv_H, _col(Y, 0))
+                inv_F = _inv(self.params.F)
+                # IMPROVE!
+                for _ in range(index):
+                    X0 = _dot(inv_F, X0)
+                self.params.X0 = X0
+            if self.estimate_P0:
+                # <X[0]> = inv(H) Y[0] => VAR<X[0]> = inv(H) var(Y[0]) inv(H)' 
+                # P[0] = inv(H) R inv(H)'
+                self.params.P0 = _dot(inv_H, self.params.R, _t(inv_H))
+            if self.estimate_Q:
+                # <Q> = var(X1 - F X0)
+                X0 = _head_cols(X)
+                X1 = _tail_cols(X)
+                self.params.Q = _covariance_matrix_estimation(X1 - _dot(self.params.F, X0))
+            #self.params.show()
+            #sys.exit(0)
+        except np.linalg.LinAlgError:
+            pass #DO something
     
     def evaluate(self, Y, index=0):
         super().evaluate(Y, index)
@@ -2247,3 +2252,5 @@ if __name__ == "__main__":
 # pip install pytest
 # or
 # py.test kalman.py
+
+#chrome-extension://oemmndcbldboiebfnladdacbdfmadadm/https://people.eecs.berkeley.edu/~pabbeel/cs287-fa13/slides/Likelihood_EM_HMM_Kalman.pdf
