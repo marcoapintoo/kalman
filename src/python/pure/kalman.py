@@ -1591,7 +1591,11 @@ class PurePSOHeuristicEstimator:
             #self.particles[i].evaluate(self.Y)
             #print("-"*80); self.particles[i].params.show()
             y0, subY = _subsample(self.Y, self.sample_size)
-            self.particles[i].evaluate(subY, y0)
+            try:
+                self.particles[i].evaluate(subY, y0)
+            except np.linalg.LinAlgError: #Avoid SVD convergence issues
+                self.particles[i].metric = -1e100
+                self.particles[i].loglikelihood = -1e100
             self.best_particle.copy_best_from(self.particles[i])
             self.particles[i].move(self.best_particle)
             #print("."*80); self.particles[i].params.show()

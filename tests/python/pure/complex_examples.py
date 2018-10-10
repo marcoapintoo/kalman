@@ -375,6 +375,92 @@ def simSSM(n, F, H, X0, P0, Q, R):
 def mse(Xtrue, Xest):
     #return np.mean(np.abs((Xtrue.ravel() - Xest.ravel()) ** 2))
     return np.sqrt(np.mean((Xtrue.ravel() - Xest.ravel()) ** 2))
+
+import pickle
+def createSamplesSingleParam(n, params, estimates, noise_factor, fname=None):
+    if fname is not None and os.path.exists(fname):
+        with open(fname, "rb") as f:
+            random_params = pickle.load(f)
+        return random_params 
+    np.random.seed()
+    random_params = []
+    for _ in range(n):
+        noised_params = params.copy()    
+        for p in "F H Q R X0 P0".split():
+            if p in estimates:
+                setattr(noised_params, p, getattr(params, p) + noise_factor * np.random.randn(*getattr(params, p).shape))
+        random_params.append((noised_params, estimates, noise_factor))
+
+    if fname is not None:
+        with open(fname, "wb") as f:
+            pickle.dump(random_params, f)
+    return random_params
+
+def createSampleNoisedParams(params, fname=None):
+    np.random.seed()
+    if fname is not None and os.path.exists(fname):
+        with open(fname, "rb") as f:
+            random_params = pickle.load(f)
+        return random_params
+    noised_factors = [
+        (1, 0.0),
+        (50, 0.01),
+        (300, 0.1),
+        (50, 1),
+        (10, 1),
+    ]
+    noised_factors1 = [(1, 0.0),
+        (1, 0.01),
+        (1, 0.1)
+    ]  
+    random_params = [] 
+    for qnt, factor in noised_factors:
+        for estimates in (list("F H Q R X0 P0".split()) + ["F H Q R X0 P0"]):
+            random_params += createSamplesSingleParam(qnt, params, estimates, factor, fname=None)
+    if fname is not None:
+        with open(fname, "wb") as f:
+            pickle.dump(random_params, f)
+    return random_params
+
+
+def simParam2(type_estimator, X, Y, simparams, prevInErrs=[], prevOutErrs=[]):
+    N = len(simparams)
+    inErrs = np.zeros(N)
+    outErrs = np.zeros(N)
+    bestOutErr = -1e100
+    bestEstParams = None
+    params = simparams[0][0]
+    for i in range(N):
+        estimates = simparams[i][1]
+        smt, _ = test_estimator(
+            type_estimator,
+            X, Y, simparams[i][0],
+            estimates=estimates,
+            sample_size=3000,
+            population_size=10,
+            min_iterations=2,
+            max_iterations=30,
+            penalty_factors={
+                "mse": 1e-1,
+            },
+            plot_intermediate_results=False,
+        )
+        
+        inErr, outErr = 0, 0
+        p_estimates = "F H Q R X0 P0".split()
+        for p in p_estimates:
+            if p in estimates:
+                inErr += mse(getattr(params, p), getattr(simparams[i][0], p))
+                outErr += mse(getattr(params, p), getattr(smt.parameters, p))
+        inErr, outErr = inErr/len(estimates.split()), outErr/len(estimates.split())        
+        inErrs[i] = inErr
+        outErrs[i] = outErr
+        if outErr > bestOutErr:
+            bestOutErr = outErr
+            bestEstParams = smt.parameters
+        print("o", end=" {0:.1f} ".format(np.mean(outErrs[:i+1])))
+    print()
+    return np.concatenate([prevInErrs, inErrs]), np.concatenate([prevOutErrs, outErrs]), bestEstParams
     
 def simSingleParam(type_estimator, X, Y, params, estimates, noise_factor):
     np.random.seed()
@@ -403,7 +489,7 @@ def simSingleParam(type_estimator, X, Y, params, estimates, noise_factor):
         min_iterations=5,
         max_iterations=30,
         penalty_factors={
-            "mse": 0,
+            "mse": 1e-1,
         },
         plot_intermediate_results=False,
     )
@@ -412,7 +498,7 @@ def simSingleParam(type_estimator, X, Y, params, estimates, noise_factor):
     for p in "F H Q R X0 P0".split():
         if p in estimates:
             inErr += mse(getattr(params, p), getattr(noised_params, p))
-            outErr = mse(getattr(params, p), getattr(smt.parameters, p))
+            outErr += mse(getattr(params, p), getattr(smt.parameters, p))
     '''
     print("===>", inErr)
     print("    ", outErr)
@@ -440,6 +526,9 @@ def simParam(N, type_estimator, X, Y, params, estimates, noise_factor, prevInErr
     print()
     #bestEstParams.show()
     return np.concatenate([prevInErrs, inErrs]), np.concatenate([prevOutErrs, outErrs]), bestEstParams
+
+
+
 
 #
 #
@@ -533,7 +622,7 @@ def plot_error_density(inErrs, outErrs, title="Errors"):
 
 def plot_error_confidence_interval(inErrs, outErrs, intervals = 50, title="Estimation error of X"):
     inErrs, outErrs = np.round(inErrs, 5), np.round(outErrs, 5)
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=(15, 10))
     plt.title(title)
     def bootstrap(y, measure):
         sample_size = max(5, y.shape[0] // 10)
@@ -602,24 +691,27 @@ def plot_error_confidence_interval(inErrs, outErrs, intervals = 50, title="Estim
 #
 #
 #
-def test_default_estimates(type_estimator, X1, Y1, params, all_estimates="F H X0 P0 Q R", everything=False):
+import pickle
+import os
+def test_default_estimates(type_estimator, X1, Y1, params, all_estimates="F H X0 P0 Q R", everything=False, cachefile=None):
     #all_estimates = "F H X0 P0 Q R"
     #type_estimator = "em"
-    
+
+    if cachefile is not None and os.path.exists(cachefile):
+        with open(cachefile, "rb") as f:
+            results = pickle.load(f)
+        for estimates in (all_estimates.split() if not everything else [all_estimates]):
+            print("Estimates", estimates)
+            inErrs, outErrs = results["in"], results["out"]
+            plot_error_density(inErrs, outErrs, title="Estimation error of {}".format(estimates))
+            plot_error_confidence_interval(inErrs, outErrs, title="Estimation error of {}".format(estimates))
+            plt.show()
+        return results
+
     results = {}
 
-    for estimates in (all_estimates.split() if everything else [all_estimates]):
+    for estimates in (list(all_estimates.split()) + [all_estimates]):
         print("Estimates", estimates)
-        '''
-        inErrs, outErrs, _ = simParam(
-            N=10,
-            type_estimator=type_estimator,
-            X=X1, Y=Y1,
-            params=params.copy(),
-            estimates=estimates,
-            noise_factor=1,
-        )
-        '''
         inErrs, outErrs, _ = simParam(
             N=1,
             type_estimator=type_estimator,
@@ -668,6 +760,8 @@ def test_default_estimates(type_estimator, X1, Y1, params, all_estimates="F H X0
         )
         #'''
         # Remove outliers
+        xinErrs = inErrs.copy()
+        xoutErrs = outErrs.copy()
         inErrs[np.isnan(inErrs)] = 1e100
         outErrs[np.isnan(outErrs)] = 1e100
         inErrs = inErrs[np.abs(inErrs - inErrs.mean()) < 50 * inErrs.std()]
@@ -676,8 +770,58 @@ def test_default_estimates(type_estimator, X1, Y1, params, all_estimates="F H X0
         plot_error_density(inErrs, outErrs, title="Estimation error of {}".format(estimates))
         plot_error_confidence_interval(inErrs, outErrs, title="Estimation error of {}".format(estimates))
         plt.show()
-        results[estimates] = {"in": inErrs, "out": outErrs, "estimator": bestEstParams}
+        results[estimates] = {"in": inErrs, "out": outErrs, "xin": xinErrs, "xout": xoutErrs, "estimator": bestEstParams}
     
+    if cachefile is not None:
+        with open(cachefile, "wb") as f:
+            pickle.dump(results, f)
+    return results
+
+
+
+def eval_estimator(type_estimator, X, Y, simparams, cachefile=None):
+    all_estimates = (list("F H X0 P0 Q R".split()) + ["F H Q R X0 P0"])
+
+    if cachefile is not None and os.path.exists(cachefile):
+        with open(cachefile, "rb") as f:
+            results = pickle.load(f)
+        for estimates in all_estimates:
+            print("Estimates", estimates)
+            inErrs, outErrs = results[estimates]["in"], results[estimates]["out"]
+            plot_error_density(inErrs, outErrs, title="Estimation error of {}".format(estimates))
+            plot_error_confidence_interval(inErrs, outErrs, title="Estimation error of {}".format(estimates))
+            plt.show()
+        return results
+
+    results = {}
+    
+    
+    for estimates in all_estimates:
+        simparams2 = [(a,b,c) for (a,b,c) in simparams if b == estimates]
+        idxsimparams2 = [i for i, (a,b,c) in enumerate(simparams) if b == estimates]
+        print("Estimates", estimates)
+        inErrs, outErrs, bestEstParams = simParam2(type_estimator, X, Y, simparams2)
+        #'''
+        # Remove outliers
+        xinErrs = inErrs.copy()
+        xoutErrs = outErrs.copy()
+        inErrs[np.isnan(inErrs)] = 1e100
+        outErrs[np.isnan(outErrs)] = 1e100
+        inErrs = inErrs[np.abs(inErrs - inErrs.mean()) < 50 * inErrs.std()]
+        outErrs = outErrs[np.abs(inErrs - inErrs.mean()) < 50 * inErrs.std()]
+        #
+        try:
+            plot_error_density(inErrs, outErrs, title="Estimation error of {}".format(estimates))
+            plot_error_confidence_interval(inErrs, outErrs, title="Estimation error of {}".format(estimates))
+            plt.show()
+        except Exception as e:
+            print("ERROR: Plot failed!", e)
+            [(plt.clf(), plt.close()) for _ in range(4)]
+        results[estimates] = {"in": inErrs, "out": outErrs, "xin": xinErrs, "xout": xoutErrs, "estimator": bestEstParams, "idx": np.array(idxsimparams2)}
+    
+    if cachefile is not None:
+        with open(cachefile, "wb") as f:
+            pickle.dump(results, f)
     return results
 
 """
