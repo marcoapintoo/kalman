@@ -199,15 +199,7 @@ def plot_error_confidence_interval(inErrs, outErrs, intervals = 50, title="Estim
     def bootstrap(y, measure):
         sample_size = max(5, y.shape[0] // 10)
         ys = []
-        for i in range(10):
-            yb = np.random.choice(y, sample_size)
-            ys.append(measure(yb))
-        return np.mean(ys)
-
-    def bootstrap2(y, measure):
-        sample_size = max(5, y.shape[0] // 10)
-        ys = []
-        for i in range(100):
+        for i in range(200):
             yb = np.random.choice(y, sample_size)
             ys.append(np.mean(yb))
         return measure(ys)
@@ -261,9 +253,104 @@ def plot_error_confidence_interval(inErrs, outErrs, intervals = 50, title="Estim
     plt.legend()
 
 
+
+def plot_error_confidence_interval2(inErrs, outErrs, title="Estimation error of X", show_bars=False, maxerror=None):
+    inErrs, outErrs = np.round(inErrs, 8), np.round(outErrs, 8)
+    if maxerror is not None:
+        outErrs = outErrs[inErrs <= maxerror]
+        inErrs = inErrs[inErrs <= maxerror]
+    plt.figure(figsize=(15, 10))
+    plt.title(title)
+    mean, std, percentile = np.mean, np.std, lambda p: (lambda y: np.percentile(y, p*100, interpolation="linear"))
+    
+    def bootstrap(y, measure):
+        sample_size = max(5, y.shape[0] // 10)
+        ys = []
+        for i in range(200):
+            yb = np.random.choice(y, sample_size)
+            ys.append(np.mean(yb))
+        return measure(ys)
+    
+    # regroup series
+    xinterval = np.sort(np.unique(inErrs))
+    delta_xinterval = xinterval[1] - xinterval[0]
+    yinterval = []
+    for i, x0 in enumerate(xinterval):
+        yinterval.append(outErrs[inErrs == x0])
+        if len(yinterval[i]) < 10:
+            yinterval[i] = np.repeat(yinterval[i], 10)
+    
+    # Remove empty spaces
+    intervals = len(xinterval)
+    yinterval_mean = np.array([bootstrap(yinterval[i], mean) for i in range(intervals)])
+    yinterval_std = np.array([bootstrap(yinterval[i], std) for i in range(intervals)])
+    yinterval_sup_ci = np.array([bootstrap(yinterval[i], percentile(0.95)) for i in range(intervals)])
+    yinterval_inf_ci = np.array([bootstrap(yinterval[i], percentile(0.05)) for i in range(intervals)])
+    
+    
+    
+    plt.plot(inErrs, outErrs, ".", color="darkblue", alpha=0.3, markersize=3)
+    plt.plot(xinterval, yinterval_mean, "-", color="darkblue", label="Mean error")
+    plt.plot(xinterval, yinterval_mean + yinterval_std, "--", color="darkred", linewidth=0.5, label="Mean error +/- std. dev.", )
+    plt.plot(xinterval, yinterval_mean - yinterval_std, "--", color="darkred", linewidth=0.5, )
+    plt.plot(xinterval, yinterval_sup_ci, "-", color="darkred", linewidth=1, label="Confidence interval")
+    plt.plot(xinterval, yinterval_inf_ci, "-", color="darkred", linewidth=1)
+    #plt.fill_between(xinterval, yinterval_mean + 2 * yinterval_std, yinterval_mean -  2 * yinterval_std, color="red", alpha=0.1)
+    plt.fill_between(xinterval, yinterval_mean + yinterval_std, yinterval_mean -  yinterval_std, color="red", alpha=0.05)
+    plt.fill_between(xinterval, yinterval_sup_ci, yinterval_inf_ci, color="red", alpha=0.1)
+    
+    plt.plot(inErrs[0], outErrs[0], "o", color="darkblue", alpha=1, markersize=10, label="Default error: {0:.2g}\nGlobal error: {1:.2g}".format(outErrs[0], outErrs.mean()))
+    
+    if show_bars:
+        for i in range(intervals):
+            y_errs = yinterval[i]
+            factor_y = plt.gca().get_ylim()
+            factor_x = plt.gca().get_xlim()
+            x0 = xinterval[i] + (factor_x[1] - factor_x[0]) * 0.001
+            dx0 = (factor_x[1] - factor_x[0]) * 0.01
+            scale_plot = lambda y, factor=factor_y: (y - factor[0])/(factor[1] - factor[0])
+            plt.axvline(x=x0, ymin=scale_plot(y_errs.min()), ymax=scale_plot(y_errs.max()), color="gray", alpha=0.5)
+            plt.axhline(y=y_errs.min(), xmin=scale_plot(x0 - dx0, factor_x), xmax=scale_plot(x0 + dx0, factor_x), color="gray", alpha=1)
+            plt.axhline(y=y_errs.max(), xmin=scale_plot(x0 - dx0, factor_x), xmax=scale_plot(x0 + dx0, factor_x), color="gray", alpha=1)
+            #plt.plot(xinterval, yinterval, ".")
+    else:
+        ptp_ci = yinterval_sup_ci.max() - yinterval_inf_ci.min()
+        plt.ylim(max(-0.2, yinterval_inf_ci.min() - 0.2 * ptp_ci), 0.2 * ptp_ci + yinterval_sup_ci.max())
+        plt.xlim(xinterval.min(), xinterval.max())
+    plt.legend()
+
+
+###############################################################################
+# SIMULATE DATA USING PARAMETERS
+###############################################################################
+def simVAR(n, A, X0, P0):
+    # X1 = A X0 + N(0, P0)
+    Xs = [X0]
+    for i in range(n - 1):
+        #print(Xs)
+        Xs.append(A.dot(Xs[-1]) + np.random.multivariate_normal(np.zeros(P0.shape[0]), P0)[0])
+    return np.array(Xs) # first: X[0]
+    #return np.array(Xs).reshape(-1, X0.shape[1], X0.shape[0]).T # first: X[:, :, 0]
+
+def simObs(F, Xs, R):
+    Ys = []
+    for t in range(Xs.shape[0]):
+        Ys.append(F.dot(Xs[t]) + np.random.multivariate_normal(np.zeros(R.shape[0]), R)[0])
+    return np.array(Ys) # first: Y[0]
+    #return np.array(Ys).reshape(-1, Xs.shape[2], Xs.shape[1]).T # first: X[:, :, 0]
+
+def simSSM(n, F, H, X0, P0, Q, R):
+    X0e = np.random.multivariate_normal(X0.ravel(), P0).reshape(X0.shape)
+    Xs = simVAR(n, F, X0e, Q)
+    Ys = simObs(F, Xs, R)
+    return Xs, Ys
+
+
 ###############################################################################
 # PARAMETERS
 ###############################################################################
+ALL_PARAMETERS = "F H Q R X0 P0"
+
 def create_true_params_1x3_true():
     params = kalman.SSMParameters()
     params.F = np.array([
@@ -427,7 +514,7 @@ def noising_params(params, factor=0.2):
 
 
 ###############################################################################
-# TEST BASE
+# TEST ESTIMATORS
 ###############################################################################
 def test_metaestimator(type_estimator, X, Y, params, estimates=ALL_PARAMETERS, sample_size=3000, min_iterations=5, max_iterations=20, min_improvement=0.01, population_size=10, penalty_factors={}, plot_intermediate_results=True):
     neo_params = params.copy()
@@ -526,42 +613,16 @@ def test_estimator(type_estimator, X, Y, params, estimates=ALL_PARAMETERS, sampl
         plot_results(smoother, X, Y)
     return smoother, record
 
-
-#
-#
-#
-def simVAR(n, A, X0, P0):
-    # X1 = A X0 + N(0, P0)
-    Xs = [X0]
-    for i in range(n - 1):
-        #print(Xs)
-        Xs.append(A.dot(Xs[-1]) + np.random.multivariate_normal(np.zeros(P0.shape[0]), P0)[0])
-    return np.array(Xs) # first: X[0]
-    #return np.array(Xs).reshape(-1, X0.shape[1], X0.shape[0]).T # first: X[:, :, 0]
-
-def simObs(F, Xs, R):
-    Ys = []
-    for t in range(Xs.shape[0]):
-        Ys.append(F.dot(Xs[t]) + np.random.multivariate_normal(np.zeros(R.shape[0]), R)[0])
-    return np.array(Ys) # first: Y[0]
-    #return np.array(Ys).reshape(-1, Xs.shape[2], Xs.shape[1]).T # first: X[:, :, 0]
-
-def simSSM(n, F, H, X0, P0, Q, R):
-    X0e = np.random.multivariate_normal(X0.ravel(), P0).reshape(X0.shape)
-    Xs = simVAR(n, F, X0e, Q)
-    Ys = simObs(F, Xs, R)
-    return Xs, Ys
-
-#
-#
-#
+###############################################################################
+# EVALUATION METRIC
+###############################################################################
 def mse(Xtrue, Xest):
     #return np.mean(np.abs((Xtrue.ravel() - Xest.ravel()) ** 2))
     return np.sqrt(np.mean((Xtrue.ravel() - Xest.ravel()) ** 2))
 
-
-ALL_PARAMETERS = "F H Q R X0 P0"
-
+###############################################################################
+# NOISING THE TRUE PARAMETERS
+###############################################################################
 def create_noised_params(n, params, estimates, noise_factor, fname=None):
     if fname is not None and os.path.exists(fname):
         with open(fname, "rb") as f:
@@ -574,6 +635,8 @@ def create_noised_params(n, params, estimates, noise_factor, fname=None):
         for p in ALL_PARAMETERS.split():
             if p in estimates:
                 setattr(noised_params, p, getattr(params, p) + noise_factor * np.random.randn(*getattr(params, p).shape))
+                if p in ["Q", "R", "P0"]:
+                    _fix_variance(getattr(noised_params, p))
         random_params.append((noised_params, estimates, noise_factor))
 
     if fname is not None:
@@ -581,6 +644,9 @@ def create_noised_params(n, params, estimates, noise_factor, fname=None):
             pickle.dump(random_params, f)
     return random_params
 
+def _fix_variance(V):
+    V[np.diag_indices(V.shape[0])] = np.abs(np.diag(V))
+    
 def create_set_noised_parameters(params, fname=None):
     np.random.seed()
     if fname is not None and os.path.exists(fname):
@@ -603,6 +669,9 @@ def create_set_noised_parameters(params, fname=None):
     return random_params
 
 
+###############################################################################
+# TEST A SET ESTIMATORS
+###############################################################################
 def _test_set_parameters(type_estimator, X, Y, simparams, prevInErrs=[], prevOutErrs=[]):
     N = len(simparams)
     inErrs = np.zeros(N)
@@ -621,7 +690,7 @@ def _test_set_parameters(type_estimator, X, Y, simparams, prevInErrs=[], prevOut
             min_iterations=2,
             max_iterations=30,
             penalty_factors={
-                "mse": 1e-1,
+                "mse": 0,#1e-1,
             },
             plot_intermediate_results=False,
         )
@@ -638,8 +707,8 @@ def _test_set_parameters(type_estimator, X, Y, simparams, prevInErrs=[], prevOut
         if outErr > bestOutErr:
             bestOutErr = outErr
             bestEstParams = smt.parameters
-        print("o", end=" {0:.1f} ".format(np.mean(outErrs[:i+1])))
-    print()
+        #print("o", end=" {0:.1f} ".format(np.mean(outErrs[:i+1])))
+    #print()
     return np.concatenate([prevInErrs, inErrs]), np.concatenate([prevOutErrs, outErrs]), bestEstParams
     
 ###############################################################################
@@ -653,9 +722,9 @@ def eval_estimator(type_estimator, X, Y, simparams, cachefile=None):
             results = pickle.load(f)
         for estimates in all_estimates:
             print("Estimates", estimates)
-            inErrs, outErrs = results[estimates]["in"], results[estimates]["out"]
-            plot_error_density(inErrs, outErrs, title="Estimation error of {}".format(estimates))
-            plot_error_confidence_interval(inErrs, outErrs, title="Estimation error of {}".format(estimates))
+            plot_error_density(results[estimates]["factors"], results[estimates]["out"], title="Estimation error of {}".format(estimates))
+            plot_error_confidence_interval2(results[estimates]["factors"], results[estimates]["out"], title="Estimation error of {}".format(estimates), maxerror=0.5);plt.show()
+            plot_error_confidence_interval2(results[estimates]["factors"], results[estimates]["out"], title="Estimation error of {}".format(estimates))
             plt.show()
         return results
 
@@ -665,23 +734,27 @@ def eval_estimator(type_estimator, X, Y, simparams, cachefile=None):
     for estimates in all_estimates:
         simparams2 = [(a,b,c) for (a,b,c) in simparams if b == estimates]
         idxsimparams2 = [i for i, (a,b,c) in enumerate(simparams) if b == estimates]
-        noisefactorparams2 = np.array([c for (a,b,c) in simparams if b == estimates])
+        factors = np.array([c for (a,b,c) in simparams if b == estimates])
         print("Estimates", estimates)
         inErrs, outErrs, bestEstParams = _test_set_parameters(type_estimator, X, Y, simparams2)
         #'''
         # Remove outliers
+        xfactors = factors.copy()
         xinErrs = inErrs.copy()
         xoutErrs = outErrs.copy()
-        inErrs[np.isnan(inErrs)] = 1e100
-        outErrs[np.isnan(outErrs)] = 1e100
-        inErrs = inErrs[np.abs(inErrs - inErrs.mean()) < 50 * inErrs.std()]
-        outErrs = outErrs[np.abs(inErrs - inErrs.mean()) < 50 * inErrs.std()]
+        inErrs = inErrs[np.isfinite(outErrs)]
+        factors = factors[np.isfinite(outErrs)]
+        outErrs = outErrs[np.isfinite(outErrs)]
+        inErrs = inErrs[np.abs(outErrs - outErrs.mean()) < 7 * outErrs.std()]
+        factors = factors[np.abs(outErrs - outErrs.mean()) < 7 * outErrs.std()]
+        outErrs = outErrs[np.abs(outErrs - outErrs.mean()) < 7 * outErrs.std()]
         #
         try:
             #plot_error_density(inErrs, outErrs, title="Estimation error of {}".format(estimates))
-            plot_error_density(noisefactorparams2, outErrs, title="Estimation error of {}".format(estimates))
+            plot_error_density(factors, outErrs, title="Estimation error of {}".format(estimates))
             #plot_error_confidence_interval(inErrs, outErrs, title="Estimation error of {}".format(estimates))
-            plot_error_confidence_interval(noisefactorparams2, outErrs, title="Estimation error of {}".format(estimates))
+            plot_error_confidence_interval2(factors, outErrs, title="Estimation error of {}".format(estimates), maxerror=0.5);plt.show()
+            plot_error_confidence_interval2(factors, outErrs, title="Estimation error of {}".format(estimates))
             plt.show()
         except Exception as e:
             print("ERROR: Plot failed!", e)
@@ -690,7 +763,7 @@ def eval_estimator(type_estimator, X, Y, simparams, cachefile=None):
             "in": inErrs, "out": outErrs, 
             "xin": xinErrs, "xout": xoutErrs, 
             "estimator": bestEstParams, "idx": np.array(idxsimparams2),
-            "factors": noisefactorparams2
+            "factors": factors, "xfactors": xfactors,
         }
     
     if cachefile is not None:

@@ -1088,14 +1088,14 @@ class ExpectationMaximizationEstimator:
         if self.estimate_R:
             self.parameters.R = _zero_matrix(O, O)
             for t in range(T):
-                self.parameters.R += _dot(_col(ks.Y(), t) * _t(_col(ks.Y(), t))) - _dot(self.parameters.H, _col(ks.Xs(), t), _t(_col(ks.Y(), t)))
+                self.parameters.R += _dot(_col(ks.Y(), t), _t(_col(ks.Y(), t))) - _dot(self.parameters.H, _col(ks.Xs(), t), _t(_col(ks.Y(), t)))
             self.parameters.R /= T
             # Fix math rounding errors
             _set_diag_values_positive(self.parameters.R)
         if self.estimate_F:
             self.parameters.F = _dot(_sum_slices(ACF), _inv(_sum_slices(_head_slices(P))))
         if self.estimate_Q:
-            self.parameters.Q = _sum_slices(_tail_slices(P)) - _dot(self.parameters.F, _t(_sum_slices(ACF))) / (T - 1)
+            self.parameters.Q = _sum_slices(_tail_slices(P)) - _dot(self.parameters.F, _t(_sum_slices(ACF)))
             self.parameters.Q /= (T - 1)
             _set_diag_values_positive(self.parameters.Q)
         if self.estimate_X0:
