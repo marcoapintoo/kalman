@@ -1,6 +1,7 @@
 #pragma once
 #include <iostream>
 #include <typeinfo>
+#include <string>
 #include <sstream>
 #include <ctime>
 #include <cstdio>
@@ -71,16 +72,16 @@ namespace SSM::TimeInvariant {
     static matrix3d_t empty_matrix3d;
 
     struct BaseKalmanSmoother{
-        double_t loglikelihood(){return 0.0;}
+        virtual double_t loglikelihood(){return 0.0;}
         matrix2d_t empty;
-        matrix2d_t& X0(){return empty;}
-        matrix2d_t& P0(){return empty;}
-        matrix2d_t& Q(){return empty;}
-        matrix2d_t& R(){return empty;}
-        matrix2d_t& F(){return empty;}
-        matrix2d_t& H(){return empty;}
-        matrix2d_t& Xs(){return empty;}
-        matrix2d_t& Ys(){return empty;}
+        virtual matrix2d_t& X0(){return empty;}
+        virtual matrix2d_t& P0(){return empty;}
+        virtual matrix2d_t& Q(){return empty;}
+        virtual matrix2d_t& R(){return empty;}
+        virtual matrix2d_t& F(){return empty;}
+        virtual matrix2d_t& H(){return empty;}
+        virtual matrix2d_t& Xs(){return empty;}
+        virtual matrix2d_t& Ys(){return empty;}
     };
 
     ///////////////////////////////////////////////////////////////////////////
@@ -248,16 +249,20 @@ namespace SSM::TimeInvariant {
         }
     }
 
-    inline matrix2d_t _dot(matrix2d_t v1){
+    inline matrix2d_t _dot(const matrix2d_t& v1){
         return v1;
     }
 
-    inline matrix2d_t _dot(matrix2d_t v1, matrix2d_t v2){
+    inline matrix2d_t _dot(const matrix2d_t& v1, const matrix2d_t& v2){
         return v1 * v2;
     }
 
-    inline matrix2d_t _dot(matrix2d_t v1, matrix2d_t v2, matrix2d_t v3){
+    inline matrix2d_t _dot(const matrix2d_t& v1, const matrix2d_t& v2, const matrix2d_t& v3){
         return v1 * v2 * v3;
+    }
+
+    inline matrix2d_t _dot(const matrix2d_t& v1, const matrix2d_t& v2, const matrix2d_t& v3, const matrix2d_t& v4){
+        return v1 * v2 * v3 * v4;
     }
 
     void test_dot(){
@@ -889,13 +894,14 @@ namespace SSM::TimeInvariant {
     X{t} = F X{t-1} + N(0, Q)
     Y{t} = H X{t} + N(0, R)
     */
-    struct KalmanFilter{
+    struct KalmanFilter: public BaseKalmanSmoother{
         SSMParameters parameters;
         SSMEstimated filtered_estimates;
         SSMEstimated predicted_estimates;
         matrix2d_t _Y;
 
-        KalmanFilter(): 
+        KalmanFilter():
+            BaseKalmanSmoother(),
             parameters(), 
             filtered_estimates(), 
             predicted_estimates(), 
@@ -951,7 +957,7 @@ namespace SSM::TimeInvariant {
 
         matrix3d_t& Pp(){ return this->predicted_estimates.P; }
 
-        double_t loglikelihood(){
+        virtual double_t loglikelihood(){
             //https://pdfs.semanticscholar.org/6654/c13f556035c1ea9e7b6a7cf53d13c98af6e7.pdf
             double_t log_likelihood = 0;
             for_range(k, 1, this->T()){
@@ -1078,7 +1084,11 @@ namespace SSM::TimeInvariant {
     }
 
     // {{export}}
-    void kalman_filter_results(KalmanFilter& kf, matrix2d_t& Xp, matrix3d_t& Pp, matrix2d_t& Yp, matrix2d_t& Xf, matrix3d_t& Pf, matrix2d_t& Yf){
+    void kalman_filter_results(
+        /*out*/ matrix2d_t& Xp, /*out*/ matrix3d_t& Pp, /*out*/ matrix2d_t& Yp, 
+        /*out*/ matrix2d_t& Xf, /*out*/ matrix3d_t& Pf, /*out*/ matrix2d_t& Yf,
+        KalmanFilter& kf
+    ){
         Xp = kf.Xp();
         Pp = kf.Pp();
         Yp = kf.Yp();
@@ -1088,7 +1098,10 @@ namespace SSM::TimeInvariant {
     }
 
     // {{export}}
-    void kalman_filter_parameters(KalmanFilter& kf, matrix2d_t& F, matrix2d_t& H, matrix2d_t& Q, matrix2d_t& R, matrix2d_t& X0, matrix2d_t& P0){
+    void kalman_filter_parameters(
+        /*out*/ matrix2d_t& F, /*out*/ matrix2d_t& H, /*out*/ matrix2d_t& Q,
+        /*out*/ matrix2d_t& R, /*out*/ matrix2d_t& X0, /*out*/ matrix2d_t& P0,
+        KalmanFilter& kf){
         F = kf.F();
         H = kf.H();
         Q = kf.Q();
@@ -1112,6 +1125,226 @@ namespace SSM::TimeInvariant {
         //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
     }
 
+    ///////////////////////////////////////////////////////////////////////////
+    // Kalman Smoother
+    ///////////////////////////////////////////////////////////////////////////
+
+    struct KalmanSmoother: public KalmanFilter{
+        string type_of_likelihood;
+        SSMEstimated smoothed_estimates;
+        
+        KalmanSmoother(): 
+            KalmanFilter(), 
+            type_of_likelihood("smooth"),
+            smoothed_estimates(){}
+        
+        matrix2d_t& Xs(){ return this->smoothed_estimates.X; }
+        
+        matrix3d_t& Ps(){ return this->smoothed_estimates.P; }
+
+        matrix2d_t& Ys(){ return this->smoothed_estimates.Y; }
+
+        matrix3d_t& Cs(){ return this->smoothed_estimates.V; }
+
+        double_t loglikelihood_smooth(){
+            double_t log_likelihood = 0;
+            for_range(k, 1, this->T()){
+                matrix2d_t Sigma_k = _dot(this->H(), _slice(this->Ps(), k-1), _t(this->H())) + this->R();
+                double_t current_likelihood = _mvn_logprobability(_col(this->Y(), k), _dot(this->H(), _col(this->Xs(), k)), Sigma_k);
+                if(is_finite(current_likelihood)){
+                    log_likelihood += current_likelihood;
+                }
+            }
+            return log_likelihood / (this->T() - 1);
+        }
+        
+        double_t loglikelihood_filter(){
+            //http://support.sas.com/documentation/cdl/en/imlug/65547/HTML/default/viewer.htm//imlug_timeseriesexpls_sect035.htm
+            //Why this is better:
+            //https://stats.stackexchange.com/questions/296598/why-is-the-likelihood-in-kalman-filter-computed-using-filter-results-instead-of
+            double_t log_likelihood = 0;
+            for_range(k, 1, this->T()){
+                matrix2d_t Sigma_k = _dot(this->H(), _slice(this->Pf(), k-1), _t(this->H())) + this->R();
+                double_t current_likelihood = _mvn_logprobability(_col(this->Y(), k), _dot(this->H(), _col(this->Xf(), k)), Sigma_k);
+                if(is_finite(current_likelihood)){
+                    log_likelihood += current_likelihood;
+                }
+            }
+            return log_likelihood / (this->T() - 1);
+        }
+        
+        double_t loglikelihood_qfunction(){
+            double_t log_likelihood = 0;//_mvn_logprobability(this->X0(), this->X0(), this->P0()) <= 0
+            for_range(k, 1, this->T()){
+                double_t current_likelihood = _mvn_logprobability(_col(this->Xs(), k), _dot(this->F(), _col(this->Xs(), k - 1)), this->Q());
+                if(is_finite(current_likelihood)){ //Temporal patch
+                    log_likelihood += current_likelihood;
+                }
+            }
+            for_range(k, 0, this->T()){
+                double_t current_likelihood = _mvn_logprobability(_col(this->Y(), k), _dot(this->H(), _col(this->Xs(), k)), this->R());
+                if(is_finite(current_likelihood)){
+                    log_likelihood += current_likelihood;
+                }
+            }
+            return log_likelihood / (this->T() - 1);
+        }
+        
+        double_t loglikelihood(){
+            if(this->type_of_likelihood == "filter")
+                return this->loglikelihood_filter();
+            if(this->type_of_likelihood == "smooth")
+                return this->loglikelihood_filter();
+            if(this->type_of_likelihood == "function-q")
+                return this->loglikelihood_filter();
+            throw logic_error("Wrong loglikelihood type!");
+        }
+        
+        void smooth(bool filter=true){
+            if(filter){
+                this->filter();
+            }
+            this->smoothed_estimates.init(this->lat_dim(), this->obs_dim(), this->T(), true);
+            
+            index_t k = this->T() - 1;
+            _set_col(this->Xs(), k, _col(this->Xf(), k));
+            _set_slice(this->Ps(), k, _slice(this->Pf(), k));
+            k -= 1;
+            matrix2d_t A_prev;
+            while(k >= 0){
+                matrix2d_t A = _dot(_slice(this->Pf(), k), _t(this->F()), _inv(_slice(this->Pp(), k + 1)));
+                _no_finite_to_zero(A);
+                _set_slice(this->Ps(), k, _slice(this->Pf(), k) - _dot(A, _slice(this->Ps(), k + 1) - _slice(this->Pf(), k + 1), _t(A))); //Ghahramani
+                _set_col(this->Xs(), k, _col(this->Xf(), k) + _dot(A, _col(this->Xs(), k + 1) - _col(this->Xp(), k + 1)));
+                if(k == this->T() - 2){
+                    matrix2d_t G = _dot(_slice(this->Pp(), k + 1), _t(this->H()), _inv(_dot(this->H(), _slice(this->Pp(), k + 1), _t(this->H())) + this->R()));
+                    _set_slice(this->Cs(), k, _dot(this->F(), _slice(this->Pf(), k)) - _dot(G, this->H(), this->F(), _slice(this->Pf(), k)));
+                }else{
+                    _set_slice(this->Cs(), k, _dot(_slice(this->Pf(), k + 1), _t(A)) + _dot(A_prev, _t(_slice(this->Cs(), k + 1)) - _dot(this->F(), _slice(this->Pf(), k + 1)), _t(A_prev)));
+                }
+                A_prev = A;
+                k -= 1;
+            }
+            this->smoothed_estimates.Y = _predict_expected_ssm(this->H(), this->smoothed_estimates.X);
+        }
+
+    };
+
+
+    void test_smoother_1(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        KalmanSmoother kf;
+        kf.parameters = params;
+        kf.set_Y(y);
+        kf.smooth();
+        ASSERT((abs(mean(kf.Xp()) - -50) <= 0.1 * 50), "Failed simulation: mean(X pred) != true mean");
+        ASSERT((abs(mean(kf.Xf()) - -50) <= 0.1 * 50), "Failed simulation: mean(X filter) != true mean");
+        ASSERT((abs(mean(kf.Xs()) - -50) <= 0.1 * 50), "Failed simulation: mean(X smooth) != true mean");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
+        
+
+    void test_smoother_2(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        KalmanFilter kf;
+        kf.parameters = params;
+        kf.set_Y(y);
+        kf.filter();
+        KalmanSmoother ks;
+        ks.parameters = params;
+        ks.set_Y(y);
+        ks.smooth();
+        ASSERT((abs(mean(ks.Xp()) - -50) <= 0.1 * 50), "Failed simulation: mean(X pred) != true mean");
+        ASSERT((abs(mean(ks.Xf()) - -50) <= 0.1 * 50), "Failed simulation: mean(X filter) != true mean");
+        ASSERT((abs(mean(ks.Xs()) - -50) <= 0.1 * 50), "Failed simulation: mean(X smooth) != true mean");
+        //ASSERT(round(std(ks.Xp()), 2) >= round(std(ks.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(ks.Xf()), 2) >= round(std(ks.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
+
+    // {{export}}
+    KalmanSmoother kalman_smoother(matrix2d_t& Y, matrix2d_t& F, matrix2d_t& H, matrix2d_t& Q, matrix2d_t& R, matrix2d_t& X0, matrix2d_t& P0){
+        KalmanSmoother kf;
+        kf.set_F(F);
+        kf.set_H(H);
+        kf.set_Q(Q);
+        kf.set_R(R);
+        kf.set_X0(X0);
+        kf.set_P0(P0);
+        kf.set_Y(Y);
+        kf.set_obs_dim(_nrows(Y));
+        kf.set_lat_dim(_nrows(X0));
+        kf.smooth();
+        return kf;
+    }
+
+    // it sends a reference of params, not a copy
+    KalmanSmoother kalman_smoother_from_parameters(matrix2d_t& Y, SSMParameters& params){
+        KalmanSmoother kf;
+        kf.parameters = params;
+        kf.set_Y(Y);
+        kf.set_obs_dim(_nrows(Y));
+        kf.set_lat_dim(_nrows(params.X0));
+        kf.smooth();
+        return kf;
+    }
+
+    // {{export}}
+    void kalman_smoother_results(
+        /*out*/ matrix2d_t& Xp, /*out*/ matrix3d_t& Pp, /*out*/ matrix2d_t& Yp, 
+        /*out*/ matrix2d_t& Xf, /*out*/ matrix3d_t& Pf, /*out*/ matrix2d_t& Yf,
+        /*out*/ matrix2d_t& Xs, /*out*/ matrix3d_t& Ps, /*out*/ matrix2d_t& Ys,
+        KalmanSmoother& kf
+    ){
+        Xp = kf.Xp();
+        Pp = kf.Pp();
+        Yp = kf.Yp();
+        Xf = kf.Xf();
+        Pf = kf.Pf();
+        Yf = kf.Yf();
+        Xs = kf.Xs();
+        Ps = kf.Ps();
+        Ys = kf.Ys();
+    }
+
+    // {{export}}
+    void kalman_smoother_parameters(
+        /*out*/ matrix2d_t& F, /*out*/ matrix2d_t& H, /*out*/ matrix2d_t& Q,
+        /*out*/ matrix2d_t& R, /*out*/ matrix2d_t& X0, /*out*/ matrix2d_t& P0,
+        KalmanSmoother& kf)
+    {
+        F = kf.F();
+        H = kf.H();
+        Q = kf.Q();
+        R = kf.R();
+        X0 = kf.X0();
+        P0 = kf.P0();
+    }
+
+    void test_smoother_3(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        KalmanSmoother kf = kalman_smoother(y, params.F, params.H, params.Q, params.R, params.X0, params.P0);
+        ASSERT((abs(mean(kf.Xp()) - -50) <= 0.1 * 50), "Failed simulation: mean(X pred) != true mean");
+        ASSERT((abs(mean(kf.Xf()) - -50) <= 0.1 * 50), "Failed simulation: mean(X filter) != true mean");
+        ASSERT((abs(mean(kf.Xs()) - -50) <= 0.1 * 50), "Failed simulation: mean(X smooth) != true mean");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+        kf = kalman_smoother_from_parameters(y, params);
+        ASSERT((abs(mean(kf.Xp()) - -50) <= 0.1 * 50), "Failed simulation: mean(X pred) != true mean");
+        ASSERT((abs(mean(kf.Xf()) - -50) <= 0.1 * 50), "Failed simulation: mean(X filter) != true mean");
+        ASSERT((abs(mean(kf.Xs()) - -50) <= 0.1 * 50), "Failed simulation: mean(X smooth) != true mean");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
 
 
     ///////////////////////////////////////////////////////////////////////////
