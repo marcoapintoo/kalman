@@ -54,6 +54,7 @@ void __assert(const char* expr_str, bool expr, const char* file, int line, const
     }
 //std::cerr << "///////////////////////////////////////////////////////////////////////////" << std::endl; \
 
+
 namespace SSM::TimeInvariant {
     ///////////////////////////////////////////////////////////////////////////
     ///  Basic typedef
@@ -96,6 +97,16 @@ namespace SSM::TimeInvariant {
 
     inline bool is_none(matrix3d_t& X){
         return addressof(X) == addressof(empty_matrix3d);
+    }
+
+    inline auto size(matrix1d_t& X){
+        return arma::size((const matrix1d_t&) X);
+    }
+    inline auto size(matrix2d_t& X){
+        return arma::size((const matrix2d_t&) X);
+    }
+    inline auto size(matrix3d_t& X){
+        return arma::size((const matrix3d_t&) X);
     }
 
     inline index_t _nrows(const matrix2d_t& X){
@@ -799,7 +810,7 @@ namespace SSM::TimeInvariant {
         return addressof(X) == addressof(empty_ssm_parameters);
     }
     
-    SSMParameters _create_params_ones_kx1(matrix1d_t& M, matrix1d_t& K0){
+    SSMParameters _create_params_ones_kx1(const matrix1d_t& M, const matrix1d_t& K0){
         matrix2d_t K = K0;
         SSMParameters params;
         params.F = colvec({1-1e-10});
@@ -868,6 +879,237 @@ namespace SSM::TimeInvariant {
             _set_col(Ypred, t, _dot(H, _col(Xpred, t)));
         }
         return Ypred;
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
+    // Kalman Filter
+    ///////////////////////////////////////////////////////////////////////////
+
+    /*
+    X{t} = F X{t-1} + N(0, Q)
+    Y{t} = H X{t} + N(0, R)
+    */
+    struct KalmanFilter{
+        SSMParameters parameters;
+        SSMEstimated filtered_estimates;
+        SSMEstimated predicted_estimates;
+        matrix2d_t _Y;
+
+        KalmanFilter(): 
+            parameters(), 
+            filtered_estimates(), 
+            predicted_estimates(), 
+            _Y(empty_matrix2d){}
+        
+        index_t T(){ return _ncols(this->Y()); }
+        
+        index_t obs_dim(){ return this->parameters.obs_dim; }
+        
+        void set_obs_dim(index_t v){ this->parameters.obs_dim = v; }
+        
+        index_t lat_dim(){ return this->parameters.lat_dim; }
+        
+        void set_lat_dim(index_t v){ this->parameters.lat_dim = v; }
+
+        matrix2d_t& F(){ return this->parameters.F; }
+
+        void set_F(matrix2d_t& v){ this->parameters.F = v; }
+
+        matrix2d_t& H(){ return this->parameters.H; }
+        
+        void set_H(matrix2d_t& v){ this->parameters.H = v; }
+
+        matrix2d_t& Q(){ return this->parameters.Q; }
+        
+        void set_Q(matrix2d_t& v){ this->parameters.Q = v; }
+
+        matrix2d_t& R(){ return this->parameters.R; }
+        
+        void set_R(matrix2d_t& v){ this->parameters.R = v; }
+
+        matrix2d_t& X0(){ return this->parameters.X0; }
+        
+        void set_X0(matrix2d_t& v){ this->parameters.X0 = v; }
+
+        matrix2d_t& P0(){ return this->parameters.P0; }
+        
+        void set_P0(matrix2d_t& v){ this->parameters.P0 = v; }
+
+        matrix2d_t& Y(){ return this->_Y; }
+        
+        void set_Y(matrix2d_t& v){ this->_Y = v; }
+        
+        matrix2d_t& Xf(){ return this->filtered_estimates.X; }
+
+        matrix3d_t& Pf(){ return this->filtered_estimates.P; }
+        
+        matrix2d_t& Yf(){ return this->filtered_estimates.Y; }
+
+        matrix2d_t& Xp(){ return this->predicted_estimates.X; }
+            
+        matrix2d_t& Yp(){ return this->predicted_estimates.Y; }
+
+        matrix3d_t& Pp(){ return this->predicted_estimates.P; }
+
+        double_t loglikelihood(){
+            //https://pdfs.semanticscholar.org/6654/c13f556035c1ea9e7b6a7cf53d13c98af6e7.pdf
+            double_t log_likelihood = 0;
+            for_range(k, 1, this->T()){
+                matrix2d_t Sigma_k = _dot(this->H(), _slice(this->Pf(), k-1), _t(this->H())) + this->R();
+                double_t current_likelihood = _mvn_logprobability(_col(this->Y(), k), _dot(this->H(), _col(this->Xf(), k)), Sigma_k);
+                if(is_finite(current_likelihood)){
+                    log_likelihood += current_likelihood;
+                }
+            }
+            return log_likelihood / (this->T() - 1);
+        }
+
+        void verify_parameters(){
+            if(this->lat_dim() == 0){
+                throw logic_error("Observation sequence has no samples");
+            }
+            if(!(
+                _nrows(this->Y()) == _nrows(this->H()) &&
+                //_ncols(this->R()) == _nrows(this->Q()) &&
+                _ncols(this->R()) == _nrows(this->H())
+            )){
+                stringstream ss;
+                ss << "There is no concordance in the dimension of observed signal. "
+                   << "Y: " << size(this->Y())
+                   << "H: " << size(this->H())
+                   << "R: " << size(this->R())
+                   << endl;
+                throw logic_error(ss.str().c_str());
+            }
+            if(!(
+                _nrows(this->P0()) == _ncols(this->P0()) &&
+                _nrows(this->X0()) == _ncols(this->P0()) &&
+                _nrows(this->X0()) == _ncols(this->H()) &&
+                _nrows(this->F()) == _ncols(this->H()) &&
+                _nrows(this->F()) == _ncols(this->Q()) &&
+                _ncols(this->F()) == _nrows(this->F()) &&
+                _ncols(this->Q()) == _nrows(this->Q())
+            )){
+                stringstream ss;
+                ss << "There is no concordance in the dimension of latent signal. "
+                   << "X0: " << size(this->X0())
+                   << "P0: " << size(this->P0())
+                   << "F: " << size(this->F())
+                   << "H: " << size(this->H())
+                   << "R: " << size(this->R())
+                   << "Q: " << size(this->Q())
+                   << endl;
+                throw logic_error(ss.str().c_str());
+            }
+        }
+
+        void filter(){
+            this->verify_parameters();
+            this->filtered_estimates.init(this->lat_dim(), this->obs_dim(), this->T());
+            this->predicted_estimates.init(this->lat_dim(), this->obs_dim(), this->T());
+            
+            _set_col(this->Xp(), 0, this->X0());
+            _set_slice(this->Pp(), 0, this->P0());
+
+            index_t k = 0;
+            // Kalman gain
+            matrix2d_t G = _dot(_slice(this->Pp(), k), _t(this->H()), _inv(_dot(this->H(), _slice(this->Pp(), k), _t(this->H())) + this->R()));
+            // State estimate update
+            _set_col(this->Xf(), k, _col(this->Xp(), k) + _dot(G, _col(this->Y(), k) - _dot(this->H(), _col(this->Xp(), k))));
+            // Error covariance update
+            _set_slice(this->Pf(), k, _slice(this->Pp(), k) - _dot(G, this->H(), _slice(this->Pp(), k)));
+
+            for_range(k, 1, this->T()){
+                // State estimate propagation
+                _set_col(this->Xp(), k, _dot(this->F(), _col(this->Xf(), k - 1)));
+                // Error covariance propagation
+                _set_slice(this->Pp(), k, _dot(this->F(), _slice(this->Pf(), k-1), _t(this->F())) + this->Q());
+                // Kalman gain
+                G = _dot(_slice(this->Pp(), k), _t(this->H()), _inv(_dot(this->H(), _slice(this->Pp(), k), _t(this->H())) + this->R()));
+                // State estimate update
+                _set_col(this->Xf(), k, _col(this->Xp(), k) + _dot(G, _col(this->Y(), k) - _dot(this->H(), _col(this->Xp(), k))));
+                // Error covariance update
+                _set_slice(this->Pf(), k, _slice(this->Pp(), k) - _dot(G, this->H(), _slice(this->Pp(), k)));
+            }
+            //
+            this->predicted_estimates.Y = _predict_expected_ssm(this->H(), this->predicted_estimates.X);
+            this->filtered_estimates.Y = _predict_expected_ssm(this->H(), this->filtered_estimates.X);
+        }
+    };
+
+    void test_filter_1(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        KalmanFilter kf;
+        kf.set_Y(y);
+        kf.parameters = params;
+        kf.filter();
+        ASSERT((abs(mean(kf.Xp()) - -50) <= 0.1 * 50), "Failed simulation: mean(X pred) != true mean");
+        ASSERT((abs(mean(kf.Xf()) - -50) <= 0.1 * 50), "Failed simulation: mean(X filter) != true mean");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+    }
+
+    // {{export}}
+    KalmanFilter kalman_filter(matrix2d_t& Y, matrix2d_t& F, matrix2d_t& H, matrix2d_t& Q, matrix2d_t& R, matrix2d_t& X0, matrix2d_t& P0){
+        KalmanFilter kf;
+        kf.set_F(F);
+        kf.set_H(H);
+        kf.set_Q(Q);
+        kf.set_R(R);
+        kf.set_X0(X0);
+        kf.set_P0(P0);
+        kf.set_Y(Y);
+        kf.set_obs_dim(_nrows(Y));
+        kf.set_lat_dim(_nrows(X0));
+        kf.filter();
+        return kf;
+    }
+
+    KalmanFilter kalman_filter_from_parameters(matrix2d_t& Y, SSMParameters& params){
+        KalmanFilter kf;
+        kf.parameters = params;
+        kf.set_Y(Y);
+        kf.set_obs_dim(_nrows(Y));
+        kf.set_lat_dim(_nrows(params.X0));
+        kf.filter();
+        return kf;
+    }
+
+    // {{export}}
+    void kalman_filter_results(KalmanFilter& kf, matrix2d_t& Xp, matrix3d_t& Pp, matrix2d_t& Yp, matrix2d_t& Xf, matrix3d_t& Pf, matrix2d_t& Yf){
+        Xp = kf.Xp();
+        Pp = kf.Pp();
+        Yp = kf.Yp();
+        Xf = kf.Xf();
+        Pf = kf.Pf();
+        Yf = kf.Yf();
+    }
+
+    // {{export}}
+    void kalman_filter_parameters(KalmanFilter& kf, matrix2d_t& F, matrix2d_t& H, matrix2d_t& Q, matrix2d_t& R, matrix2d_t& X0, matrix2d_t& P0){
+        F = kf.F();
+        H = kf.H();
+        Q = kf.Q();
+        R = kf.R();
+        X0 = kf.X0();
+        P0 = kf.P0();
+    }
+
+    void test_filter_2(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(1, 100);
+        matrix2d_t y(1, 100);
+        params.simulate(x, y, 100);
+        KalmanFilter kf = kalman_filter(y, params.F, params.H, params.Q, params.R, params.X0, params.P0);
+        ASSERT((abs(mean(kf.Xp()) - -50) <= 0.1 * 50), "Failed simulation: mean(X pred) != true mean");
+        ASSERT((abs(mean(kf.Xf()) - -50) <= 0.1 * 50), "Failed simulation: mean(X filter) != true mean");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        kf = kalman_filter_from_parameters(y, params);
+        ASSERT((abs(mean(kf.Xp()) - -50) <= 0.1 * 50), "Failed simulation: mean(X pred) != true mean");
+        ASSERT((abs(mean(kf.Xf()) - -50) <= 0.1 * 50), "Failed simulation: mean(X filter) != true mean");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
     }
 
 
