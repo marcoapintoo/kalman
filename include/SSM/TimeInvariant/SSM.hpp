@@ -1,6 +1,7 @@
 #pragma once
 #include <iostream>
 #include <typeinfo>
+#include <sstream>
 #include <ctime>
 #include <cstdio>
 #include <armadillo>
@@ -67,6 +68,19 @@ namespace SSM::TimeInvariant {
     static matrix1d_t empty_matrix1d;
     static matrix2d_t empty_matrix2d;
     static matrix3d_t empty_matrix3d;
+
+    struct BaseKalmanSmoother{
+        double_t loglikelihood(){return 0.0;}
+        matrix2d_t empty;
+        matrix2d_t& X0(){return empty;}
+        matrix2d_t& P0(){return empty;}
+        matrix2d_t& Q(){return empty;}
+        matrix2d_t& R(){return empty;}
+        matrix2d_t& F(){return empty;}
+        matrix2d_t& H(){return empty;}
+        matrix2d_t& Xs(){return empty;}
+        matrix2d_t& Ys(){return empty;}
+    };
 
     ///////////////////////////////////////////////////////////////////////////
     ///  Math cross-platform functions
@@ -303,15 +317,15 @@ namespace SSM::TimeInvariant {
         ASSERT(_nrows(Y) == 3, "");
     }
 
-    inline void _set_row(matrix2d_t& X, index_t k, matrix2d_t& v){
+    inline void _set_row(matrix2d_t& X, index_t k, const matrix2d_t& v){
         X.row(k) = v;
     }
 
-    inline void _set_col(matrix2d_t& X, index_t k, matrix2d_t& v){
+    inline void _set_col(matrix2d_t& X, index_t k, const matrix2d_t& v){
         X.col(k) = v;
     }
     
-    inline void _set_slice(matrix3d_t& X, index_t k, matrix2d_t& v){
+    inline void _set_slice(matrix3d_t& X, index_t k, const matrix2d_t& v){
         X.slice(k) = v;
     }
     
@@ -456,28 +470,20 @@ namespace SSM::TimeInvariant {
     ///////////////////////////////////////////////////////////////////////////
     
     inline double_t _measure_roughness_proposed(matrix1d_t& y0, index_t M=10){
-        printf("11111:: ");
         index_t cols = _nrows(y0);//M
-        printf("11111-A:: ");
         matrix2d_t y = reshape(y0.head_cols(cols * M), cols, M);
-        printf("11111-B:: ");
         matrix1d_t ystd = (y - mean(y, 1)) / stddev(y, 1);
-        printf("11111-C:: ");
         _no_finite_to_zero(ystd);
-        printf("11111-D:: ");
         ystd = vectorise(diff(ystd, 1, 1));
         return mean(mean(abs(ystd)));
     }
 
     inline double_t _measure_roughness(matrix2d_t& X, index_t M=10){
-        printf("00000-E:: ");
         double_t roughness = 0;
         for_range(k, 0, _nrows(X)){
-            printf("11111-G:: ");
             matrix1d_t Xk = _row(X, k);
             roughness +=  _measure_roughness_proposed(Xk, M);
         }
-        printf("11111-H:: ");
         return roughness/_nrows(X);
     }
 
@@ -505,21 +511,14 @@ namespace SSM::TimeInvariant {
             -93, -67, -88, -4, 15, -90, -67, 74, 68, -1}
         };
         matrix2d_t X = X1;
-        printf("11111-1:: ");
         ASSERT(abs(_measure_roughness(X) - 1.25) < 0.1, "");
-        printf("11111-2:: ");
         X = _one_matrix(_nrows(X1), _ncols(X1));
-        printf("11111-3:: ");
         ASSERT(abs(_measure_roughness(X) - 0) < 0.1, "");
         X = 10 * X1;
-        printf("11111-4:: ");
         ASSERT(abs(_measure_roughness(X) - 1.25) < 0.1, "");
-        printf("11111-5:: ");
         X = 1 + 0.0002 * X1;
-        printf("11111-6:: ");
-        X.row(0) = 10;
+        X.row(0).fill(10);
         ASSERT(abs(_measure_roughness(X) - 0.6) < 0.1, "");
-        printf("11111-7:: ");
     }
 
     double_t _mean_squared_error(matrix2d_t& Y, matrix2d_t& Ypred){
@@ -540,13 +539,16 @@ namespace SSM::TimeInvariant {
             { 0,  3,  5,  7,  9},
             {11, 13, 14, 17, 17}
         };
-        ASSERT(_mean_squared_error(Y, Ypred) == 3.0, "")
+        ASSERT(_mean_squared_error(Y, Ypred) == 3.0, "");
     }
 
 
     ///////////////////////////////////////////////////////////////////////////
     ///  Invariant State-Space Models
     ///////////////////////////////////////////////////////////////////////////
+
+    template<typename SSMParameters_t>
+    BaseKalmanSmoother kalman_smoother_from_parameters(matrix2d_t& Y, SSMParameters_t& f);
 
     struct SSMParameters{
         matrix2d_t F;
@@ -722,40 +724,20 @@ namespace SSM::TimeInvariant {
             return _measure_roughness(X);
         }
 
-        /*
-        def performance_parameters_line(self, Y):
-            (loglikelihood,
-            low_std_to_mean_penalty,
-            low_variance_Q_penalty,
-            low_variance_R_penalty,
-            low_variance_P0_penalty,
-            system_inestability_penalty,
-            mean_squared_error_penalty,
-            roughness_X_penalty,
-            roughness_Y_penalty) = this->performance_parameters(Y)
-            return "LL: {0:.2g} | std/avg: {1:.2g} | lQ: {2:.2g} lR: {3:.2g} lP0: {4:.2g} | inest: {5:.2g} mse: {6:.2g} | roX: {7:.2g} roY: {8:.2g}".format(
-                    loglikelihood,
-                    low_std_to_mean_penalty,
-                    low_variance_Q_penalty,
-                    low_variance_R_penalty,
-                    low_variance_P0_penalty,
-                    system_inestability_penalty,
-                    mean_squared_error_penalty,
-                    roughness_X_penalty,
-                    roughness_Y_penalty)
         
-        def performance_parameters(self, Y):
-            ks = kalman_smoother_from_parameters(Y, self)
-            loglikelihood = ks.loglikelihood()
-            low_std_to_mean_penalty = this->_penalize_low_std_to_mean_ratio(ks.X0(), ks.P0())
-            low_variance_Q_penalty = this->_penalize_low_variance(ks.Q())
-            low_variance_R_penalty = this->_penalize_low_variance(ks.R())
-            low_variance_P0_penalty = this->_penalize_low_variance(ks.P0())
-            system_inestability_penalty = this->_penalize_inestable_system(ks.F())
-            mean_squared_error_penalty = this->_penalize_mean_squared_error(Y, ks)
-            roughness_X_penalty = this->_penalize_roughness(ks.Xs())
-            roughness_Y_penalty = this->_penalize_roughness(Y)
-            return [
+        std::string performance_parameters_line(matrix2d_t& Y){
+            double_t loglikelihood;
+            double_t low_std_to_mean_penalty;
+            double_t low_variance_Q_penalty;
+            double_t low_variance_R_penalty;
+            double_t low_variance_P0_penalty;
+            double_t system_inestability_penalty;
+            double_t mean_squared_error_penalty;
+            double_t roughness_X_penalty;
+            double_t roughness_Y_penalty;
+            stringstream ss;
+            ss.precision(2);
+            this->performance_parameters(
                 loglikelihood,
                 low_std_to_mean_penalty,
                 low_variance_Q_penalty,
@@ -765,37 +747,129 @@ namespace SSM::TimeInvariant {
                 mean_squared_error_penalty,
                 roughness_X_penalty,
                 roughness_Y_penalty,
-            ]
-        */
+                Y);
+            ss  << "LL: "
+                << loglikelihood
+                << " | std/avg: "
+                << low_std_to_mean_penalty
+                << " | lQ: "
+                << low_variance_Q_penalty
+                << " lR: "
+                << low_variance_R_penalty
+                << " lP0: "
+                << low_variance_P0_penalty
+                << " | inest: "
+                << system_inestability_penalty
+                << " mse: "
+                << mean_squared_error_penalty
+                << " | roX: "
+                << roughness_X_penalty
+                << " roY: "
+                << roughness_Y_penalty 
+                << "\n";
+            return ss.str();
+        }
+
+        void performance_parameters(
+                /*out*/ double_t& loglikelihood, 
+                /*out*/ double_t& low_std_to_mean_penalty, 
+                /*out*/ double_t& low_variance_Q_penalty, 
+                /*out*/ double_t& low_variance_R_penalty, 
+                /*out*/ double_t& low_variance_P0_penalty, 
+                /*out*/ double_t& system_inestability_penalty, 
+                /*out*/ double_t& mean_squared_error_penalty, 
+                /*out*/ double_t& roughness_X_penalty, 
+                /*out*/ double_t& roughness_Y_penalty, matrix2d_t& Y){
+            BaseKalmanSmoother ks = kalman_smoother_from_parameters(Y, *this);
+            loglikelihood = ks.loglikelihood();
+            low_std_to_mean_penalty = this->_penalize_low_std_to_mean_ratio(ks.X0(), ks.P0());
+            low_variance_Q_penalty = this->_penalize_low_variance(ks.Q());
+            low_variance_R_penalty = this->_penalize_low_variance(ks.R());
+            low_variance_P0_penalty = this->_penalize_low_variance(ks.P0());
+            system_inestability_penalty = this->_penalize_inestable_system(ks.F());
+            mean_squared_error_penalty = this->_penalize_mean_squared_error(Y, ks.Ys());
+            roughness_X_penalty = this->_penalize_roughness(ks.Xs());
+            roughness_Y_penalty = this->_penalize_roughness(Y);
+        }
+        
     };
 
-    /*
-    def _create_params_ones_kx1(M, K=[100.0]):
-        K = np.array([K]).T
-        params = SSMParameters()
-        params.F = np.array([[1-1e-10]])
-        params.H = K
-        params.Q = np.array([[0.001]])
-        params.R = 0.001 * _create_noised_diag(_nrows(K), _nrows(K))
-        params.X0 = np.array([M])
-        params.P0 = np.array([[0.001]])
-        params.set_dimensions(len(K), 1)
-        return params
+    static SSMParameters empty_ssm_parameters;
+    inline bool is_none(SSMParameters& X){
+        return addressof(X) == addressof(empty_ssm_parameters);
+    }
+    
+    SSMParameters _create_params_ones_kx1(matrix1d_t& M, matrix1d_t& K0){
+        matrix2d_t K = K0;
+        SSMParameters params;
+        params.F = colvec({1-1e-10});
+        params.H = K;
+        params.Q = colvec({0.001});
+        params.R = 0.001 * _create_noised_diag(_nrows(K), _nrows(K));
+        params.X0 = M;
+        params.P0 = colvec({0.001});
+        params.set_dimensions(_nrows(K), 1);
+        return params;
+    }
 
-    def test_simulations_params():
-        params = _create_params_ones_kx1(-50, [10])
-        _, y = params.simulate(100)
-        assert np.abs(np.round(np.mean(_row(y, 0))) - -500)/100 < 0.1 * 500, "Failed simulation"
+    void test_simulations_params(){
+        matrix1d_t a = colvec({-50});
+        matrix1d_t b = colvec({10});
+        matrix1d_t c = colvec({2});
+        matrix1d_t d = colvec({-100, 100});
+        {
+            SSMParameters params = _create_params_ones_kx1(a, b);
+            matrix2d_t x(1, 100);
+            matrix2d_t y(1, 100);
+            params.simulate(x, y, 100);
+            ASSERT(abs(round(mean(_row(y, 0))) - -500)/100 < 0.1 * 500, "Failed simulation");
+        }
+        SSMParameters params = _create_params_ones_kx1(c, d);
+        {
+            matrix2d_t x(1, 1);
+            matrix2d_t y(1, 1);
+            params.simulate(x, y, 1);
+            ASSERT(abs(round(mean(_row(y, 0))) - -200)/100 < 0.1 * 200, "Failed simulation");
+            ASSERT(abs(round(mean(_row(y, 1))) - -200)/100 < 0.1 * 200, "Failed simulation");
+        }
+        matrix2d_t x(1, 100);
+        matrix2d_t y(1, 100);
+        params.simulate(x, y, 100);
+        ASSERT(abs(round(mean(_row(y, 0))) - -200)/100 < 0.1 * 200, "Failed simulation");
+        ASSERT(abs(round(mean(_row(y, 1))) - -200)/100 < 0.1 * 200, "Failed simulation");
+    }
 
-        params = _create_params_ones_kx1(2, [-100, 100])
-        _, y = params.simulate(1)
-        assert np.abs(np.round(np.mean(_row(y, 0))) - -200) < 0.1 * 200, "Failed simulation"
-        assert np.abs(np.round(np.mean(_row(y, 1))) - 200) < 0.1 * 200, "Failed simulation"
+    struct SSMEstimated{
+        matrix2d_t X;
+        matrix2d_t Y;
+        matrix3d_t P;
+        matrix3d_t V;
+        SSMEstimated(): X(), Y(), P(), V(){}
         
-        _, y = params.simulate(100)
-        assert np.abs(np.round(np.mean(_row(y, 0))) - -200)/100 < 0.1 * 200, "Failed simulation"
-        assert np.abs(np.round(np.mean(_row(y, 1))) - 200)/100 < 0.1 * 200, "Failed simulation"
-    */
+        matrix2d_t& signal(){return this->X;}
+
+        matrix3d_t& variance(){return this->P;}
+        
+        matrix3d_t& autocovariance(){return this->V;}
+        
+        void init(index_t dimX, index_t dimY, index_t length, bool fill_ACV=false){
+            this->X = _zero_matrix(dimX, length);
+            this->Y = _zero_matrix(dimY, length);
+            this->P = _zero_cube(dimX, dimX, length);
+            if(fill_ACV){
+                this->V = _zero_cube(dimX, dimX, length - 1);
+            }
+        }
+    };
+
+    matrix2d_t _predict_expected_ssm(matrix2d_t& H, matrix2d_t& Xpred){
+        matrix2d_t Ypred = _zero_matrix(_nrows(H), _ncols(Xpred));
+        for_range(t, 0, _ncols(Xpred)){
+            _set_col(Ypred, t, _dot(H, _col(Xpred, t)));
+        }
+        return Ypred;
+    }
+
 
 
     ///////////////////////////////////////////////////////////////////////////
