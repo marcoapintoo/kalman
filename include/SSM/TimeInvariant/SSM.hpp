@@ -1205,8 +1205,8 @@ namespace SSM::TimeInvariant {
                 this->filter();
             }
             this->smoothed_estimates.init(this->lat_dim(), this->obs_dim(), this->T(), true);
-            
-            index_t k = this->T() - 1;
+
+            int_t k = this->T() - 1;
             _set_col(this->Xs(), k, _col(this->Xf(), k));
             _set_slice(this->Ps(), k, _slice(this->Pf(), k));
             k -= 1;
