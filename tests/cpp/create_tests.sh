@@ -19,7 +19,7 @@ function create_test_sets(){
     echo '' >> "$ftestname"
     echo 'using namespace SSM;' >> "$ftestname"
     echo 'using namespace SSM::TimeInvariant;' >> "$ftestname"
-    echo 'using namespace SSM::TimeVariant;' >> "$ftestname"
+    echo '//using namespace SSM::TimeVariant;' >> "$ftestname"
     echo '' >> "$ftestname"
     echo "void ${testcode}_TEST(){" >> "$ftestname"
     echo "$tests" >> "$ftestname"

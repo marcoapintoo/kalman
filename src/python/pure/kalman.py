@@ -404,7 +404,6 @@ class SSMParameters:
         self.P0 = p.P0.copy().astype("f")
         self.obs_dim = p.obs_dim
         self.lat_dim = p.lat_dim
-        return p
     
     # Evaluation
 
@@ -534,20 +533,20 @@ class SSMEstimated:
         self.X = None
         self.Y = None
         self.P = None
-        self.ACV1 = None
+        self.V = None
     
     def signal(self): return self.X
 
     def variance(self): return self.P
     
-    def autocovariance(self): return self.ACV1
+    def autocovariance(self): return self.V
     
     def init(self, dimX, dimY, length, fill_ACV=False):
         self.X = _zero_matrix(dimX, length)
         self.Y = _zero_matrix(dimY, length)
         self.P = _zero_cube(dimX, dimX, length)
         if fill_ACV:
-            self.ACV1 = _zero_cube(dimX, dimX, length - 1)
+            self.V = _zero_cube(dimX, dimX, length - 1)
 
 
 def _predict_expected_ssm(H, Xpred):
@@ -860,7 +859,7 @@ class KalmanSmoother(KalmanFilter):
 
     def Ys(self): return self.smoothed_estimates.Y
 
-    def Cs(self): return self.smoothed_estimates.ACV1
+    def Cs(self): return self.smoothed_estimates.V
 
     def loglikelihood_smooth(self):
         log_likelihood = 0
@@ -1109,7 +1108,7 @@ class ExpectationMaximizationEstimator:
         self.estimation_iteration()
         for i in range(self.max_iterations):
             self.estimation_iteration()
-            unsufficient_increment = self.loglikelihood_record[-1] - self.loglikelihood_record[-2] <= self.min_improvement
+            unsufficient_increment = (self.loglikelihood_record[-1] - self.loglikelihood_record[-2]) <= self.min_improvement
             if unsufficient_increment and i > self.min_iterations:
                 break
         ks = kalman_smoother_from_parameters(self.Y, self.parameters)
@@ -1613,7 +1612,7 @@ class PurePSOHeuristicEstimator:
         self.estimation_iteration_heuristic()
         for i in range(self.max_iterations):
             self.estimation_iteration_heuristic()
-            unsufficient_increment = self.loglikelihood_record[-1] - self.loglikelihood_record[-2] <= self.min_improvement
+            unsufficient_increment = (self.loglikelihood_record[-1] - self.loglikelihood_record[-2]) <= self.min_improvement
             if unsufficient_increment and i > self.min_iterations:
                 break
         ks = kalman_smoother_from_parameters(self.Y, self.parameters)

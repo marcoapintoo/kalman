@@ -3,6 +3,8 @@
 #include <typeinfo>
 #include <string>
 #include <vector>
+#include <map>
+#include <functional>
 #include <sstream>
 #include <ctime>
 #include <cstdio>
@@ -17,12 +19,37 @@ using namespace arma;
 
 #ifndef NDEBUG
     #define ASSERT(Expr, Msg) \
-        __assert(#Expr, Expr, __FILE__, __LINE__, Msg)
+        __assert(#Expr, [](){ Expr }, __FILE__, __LINE__, Msg)
 #else
     #define ASSERT(Expr, Msg) ;
 #endif
 
-void __assert(const char* expr_str, bool expr, const char* file, int line, const char* msg)
+void __assert(const char* expr_str, function<bool(void)> expr, const char* file, int line, const char* msg)
+{
+    exception_ptr p;
+    int err_type = 0;
+    try{
+        if(!expr()) err_type = 1;
+    }catch(...){ p = current_exception(); }
+    if(err_type == 0){
+        cerr << "Assert failed:\t" << msg << "\n"
+             << "Expected:\t" << expr_str << "\n"
+             << "Source:\t\t" << file << ", line " << line << "\n";
+        abort();
+        return;
+    }
+    try{
+        if(p) rethrow_exception(p);
+    }catch(const exception &e){
+        cerr << "Assert failed:\t" << msg << "\n"
+             << "Exception thrown:\t" << e.what() << "\n"
+             << "Expected:\t" << expr_str << "\n"
+             << "Source:\t\t" << file << ", line " << line << "\n";
+        abort();
+    }
+}
+
+void __assert2(const char* expr_str, bool expr, const char* file, int line, const char* msg)
 {
     if(!expr){
         std::cerr << "Assert failed:\t" << msg << "\n"
@@ -54,10 +81,33 @@ void __assert(const char* expr_str, bool expr, const char* file, int line, const
     std::cerr << " secs.]]" << std::endl; \
     std::cerr << std::endl; \
     }
-//std::cerr << "///////////////////////////////////////////////////////////////////////////" << std::endl; \
+
+///////////////////////////////////////////////////////////////////////////
+///  Utils for C++
+///////////////////////////////////////////////////////////////////////////
 
 bool contains(const string& complete_text, const string& test_to_find){
     return complete_text.find(test_to_find) != string::npos;
+}
+template <typename K, typename V>
+V get(const map<K,V>& m, const K& key, const V& def_value){
+   typename map<K,V>::const_iterator it = m.find(key);
+   if(it == m.end()){
+      return def_value;
+   }else{
+      return it->second;
+   }
+}
+
+//template <string, double_t>
+//template <>
+double_t get(const map<string, double_t>& m, const char* key, const double_t& def_value){
+   typename map<string, double_t>::const_iterator it = m.find(string(key));
+   if(it == m.end()){
+      return def_value;
+   }else{
+      return it->second;
+   }
 }
 
 namespace SSM::TimeInvariant {
@@ -66,14 +116,18 @@ namespace SSM::TimeInvariant {
     ///////////////////////////////////////////////////////////////////////////
     typedef long int_t;
     typedef double double_t;
-    typedef unsigned long long index_t;
+    //typedef unsigned long long index_t;
+    typedef long long index_t;
     typedef Col<double_t> matrix1d_t;
     typedef Mat<double_t> matrix2d_t;
     typedef Cube<double_t> matrix3d_t;
+    typedef map<string, double_t> config_map;
 
     static matrix1d_t empty_matrix1d;
     static matrix2d_t empty_matrix2d;
     static matrix3d_t empty_matrix3d;
+
+    static config_map empty_config_map;
 
     struct BaseKalmanSmoother{
         virtual double_t loglikelihood(){return 0.0;}
@@ -92,15 +146,15 @@ namespace SSM::TimeInvariant {
     ///  Math cross-platform functions
     ///////////////////////////////////////////////////////////////////////////
 
-    inline bool is_none(matrix1d_t& X){
+    inline bool is_none(const matrix1d_t& X){
         return addressof(X) == addressof(empty_matrix1d);
     }
 
-    inline bool is_none(matrix2d_t& X){
+    inline bool is_none(const matrix2d_t& X){
         return addressof(X) == addressof(empty_matrix2d);
     }
 
-    inline bool is_none(matrix3d_t& X){
+    inline bool is_none(const matrix3d_t& X){
         return addressof(X) == addressof(empty_matrix3d);
     }
 
@@ -497,10 +551,19 @@ namespace SSM::TimeInvariant {
     ///  Roughness measurement
     ///////////////////////////////////////////////////////////////////////////
     
-    inline double_t _measure_roughness_proposed(matrix1d_t& y0, index_t M=10){
+    inline matrix2d_t standarized_signal(matrix2d_t& y){
+        matrix2d_t y_mean = mean(y, 1);
+        matrix2d_t y_stddev = stddev(y, 0, 1);
+        matrix2d_t y_std(_nrows(y), _ncols(y));
+        for_range(t, 0, _nrows(y)){
+            _set_col(y_std, t, (_col(y_std, t) - y_mean) / y_stddev);
+        }
+        return y_std;
+    }
+    inline double_t _measure_roughness_proposed(matrix2d_t& y0, index_t M=10){
         index_t cols = _nrows(y0);//M
         matrix2d_t y = reshape(y0.head_cols(cols * M), cols, M);
-        matrix1d_t ystd = (y - mean(y, 1)) / stddev(y, 1);
+        matrix2d_t ystd = standarized_signal(y);
         _no_finite_to_zero(ystd);
         ystd = vectorise(diff(ystd, 1, 1));
         return mean(mean(abs(ystd)));
@@ -509,7 +572,7 @@ namespace SSM::TimeInvariant {
     inline double_t _measure_roughness(matrix2d_t& X, index_t M=10){
         double_t roughness = 0;
         for_range(k, 0, _nrows(X)){
-            matrix1d_t Xk = _row(X, k);
+            matrix2d_t Xk = _row(X, k);
             roughness +=  _measure_roughness_proposed(Xk, M);
         }
         return roughness/_nrows(X);
@@ -575,9 +638,19 @@ namespace SSM::TimeInvariant {
     ///  Invariant State-Space Models
     ///////////////////////////////////////////////////////////////////////////
 
-    template<typename SSMParameters_t>
-    BaseKalmanSmoother kalman_smoother_from_parameters(matrix2d_t& Y, SSMParameters_t& f);
-
+    void _performance_parameters(
+                /*out*/ double_t& loglikelihood, 
+                /*out*/ double_t& low_std_to_mean_penalty, 
+                /*out*/ double_t& low_variance_Q_penalty, 
+                /*out*/ double_t& low_variance_R_penalty, 
+                /*out*/ double_t& low_variance_P0_penalty, 
+                /*out*/ double_t& system_inestability_penalty, 
+                /*out*/ double_t& mean_squared_error_penalty, 
+                /*out*/ double_t& roughness_X_penalty, 
+                /*out*/ double_t& roughness_Y_penalty, 
+                matrix2d_t& Y,
+                void* _parameters);
+    
     struct SSMParameters{
         matrix2d_t F;
         matrix2d_t H;
@@ -672,7 +745,7 @@ namespace SSM::TimeInvariant {
             return p;
         }
         
-        void copy_from(SSMParameters& p){
+        void copy_from(const SSMParameters& p){
             this->F = matrix2d_t(p.F);
             this->H = matrix2d_t(p.H);
             this->Q = matrix2d_t(p.Q);
@@ -698,8 +771,8 @@ namespace SSM::TimeInvariant {
                 20        1            5 = 100 * std/mean
                 50        1            2 = 100 * std/mean
             */
-            double_t mean_ = abs(mean(mean(X0)));
-            double_t std = mean(mean(P0));
+            double_t mean_ = abs(mean2(X0));
+            double_t std = mean2(P0);
             if (abs(mean_) < 1e-3)
                 return 0;
             return 100 * std/mean_;
@@ -715,6 +788,12 @@ namespace SSM::TimeInvariant {
             1               0.001
             10              0.0001
             */
+           index_t a = _nrows(X);
+           index_t b = _ncols(X);
+           matrix2d_t A = mean(X, 1);
+           matrix2d_t B = pow(mean(X, 1), 2);
+           matrix2d_t C = X / pow(mean(X, 1), 2);
+           double_t D = ((X / (pow(mean(X, 1), 2))).max());
             return 0.1/ ((X / (pow(mean(X, 1), 2))).max());
         }
         
@@ -808,22 +887,25 @@ namespace SSM::TimeInvariant {
                 /*out*/ double_t& mean_squared_error_penalty, 
                 /*out*/ double_t& roughness_X_penalty, 
                 /*out*/ double_t& roughness_Y_penalty, matrix2d_t& Y){
-            BaseKalmanSmoother ks = kalman_smoother_from_parameters(Y, *this);
-            loglikelihood = ks.loglikelihood();
-            low_std_to_mean_penalty = this->_penalize_low_std_to_mean_ratio(ks.X0(), ks.P0());
-            low_variance_Q_penalty = this->_penalize_low_variance(ks.Q());
-            low_variance_R_penalty = this->_penalize_low_variance(ks.R());
-            low_variance_P0_penalty = this->_penalize_low_variance(ks.P0());
-            system_inestability_penalty = this->_penalize_inestable_system(ks.F());
-            mean_squared_error_penalty = this->_penalize_mean_squared_error(Y, ks.Ys());
-            roughness_X_penalty = this->_penalize_roughness(ks.Xs());
-            roughness_Y_penalty = this->_penalize_roughness(Y);
+            _performance_parameters(
+                loglikelihood, 
+                low_std_to_mean_penalty, 
+                low_variance_Q_penalty, 
+                low_variance_R_penalty, 
+                low_variance_P0_penalty, 
+                system_inestability_penalty, 
+                mean_squared_error_penalty, 
+                roughness_X_penalty, 
+                roughness_Y_penalty,
+                Y,
+                (void*) this
+            );
         }
         
     };
 
     static SSMParameters empty_ssm_parameters;
-    inline bool is_none(SSMParameters& X){
+    inline bool is_none(const SSMParameters& X){
         return addressof(X) == addressof(empty_ssm_parameters);
     }
     
@@ -929,27 +1011,27 @@ namespace SSM::TimeInvariant {
         
         void set_lat_dim(index_t v){ this->parameters.lat_dim = v; }
 
-        matrix2d_t& F(){ return this->parameters.F; }
+        virtual matrix2d_t& F(){ return this->parameters.F; }
 
         void set_F(matrix2d_t& v){ this->parameters.F = v; }
 
-        matrix2d_t& H(){ return this->parameters.H; }
+        virtual matrix2d_t& H(){ return this->parameters.H; }
         
         void set_H(matrix2d_t& v){ this->parameters.H = v; }
 
-        matrix2d_t& Q(){ return this->parameters.Q; }
+        virtual matrix2d_t& Q(){ return this->parameters.Q; }
         
         void set_Q(matrix2d_t& v){ this->parameters.Q = v; }
 
-        matrix2d_t& R(){ return this->parameters.R; }
+        virtual matrix2d_t& R(){ return this->parameters.R; }
         
         void set_R(matrix2d_t& v){ this->parameters.R = v; }
 
-        matrix2d_t& X0(){ return this->parameters.X0; }
+        virtual matrix2d_t& X0(){ return this->parameters.X0; }
         
         void set_X0(matrix2d_t& v){ this->parameters.X0 = v; }
 
-        matrix2d_t& P0(){ return this->parameters.P0; }
+        virtual matrix2d_t& P0(){ return this->parameters.P0; }
         
         void set_P0(matrix2d_t& v){ this->parameters.P0 = v; }
 
@@ -1094,6 +1176,7 @@ namespace SSM::TimeInvariant {
         kf.filter();
         return kf;
     }
+    
 
     // {{export}}
     void kalman_filter_results(
@@ -1150,11 +1233,11 @@ namespace SSM::TimeInvariant {
             type_of_likelihood("smooth"),
             smoothed_estimates(){}
         
-        matrix2d_t& Xs(){ return this->smoothed_estimates.X; }
+        virtual matrix2d_t& Xs(){ return this->smoothed_estimates.X; }
         
         matrix3d_t& Ps(){ return this->smoothed_estimates.P; }
 
-        matrix2d_t& Ys(){ return this->smoothed_estimates.Y; }
+        virtual matrix2d_t& Ys(){ return this->smoothed_estimates.Y; }
 
         matrix3d_t& Cs(){ return this->smoothed_estimates.V; }
 
@@ -1280,6 +1363,41 @@ namespace SSM::TimeInvariant {
         //ASSERT(round(std(ks.Xf()), 2) >= round(std(ks.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
     }
 
+    KalmanSmoother kalman_smoother_from_parameters(matrix2d_t& Y, SSMParameters& params){
+        // Avoid memory leak in Win10 with the previous one.
+        KalmanSmoother kf;
+        kf.parameters = params;
+        kf.set_Y(Y);
+        kf.set_obs_dim(_nrows(Y));
+        kf.set_lat_dim(_nrows(params.X0));
+        kf.smooth();
+        return kf;
+    }
+    void _performance_parameters(
+                /*out*/ double_t& loglikelihood, 
+                /*out*/ double_t& low_std_to_mean_penalty, 
+                /*out*/ double_t& low_variance_Q_penalty, 
+                /*out*/ double_t& low_variance_R_penalty, 
+                /*out*/ double_t& low_variance_P0_penalty, 
+                /*out*/ double_t& system_inestability_penalty, 
+                /*out*/ double_t& mean_squared_error_penalty, 
+                /*out*/ double_t& roughness_X_penalty, 
+                /*out*/ double_t& roughness_Y_penalty, 
+                matrix2d_t& Y,
+                void* _parameters){
+        SSMParameters& parameters = *((SSMParameters*)_parameters);
+        KalmanSmoother smoother = kalman_smoother_from_parameters(Y, const_cast<SSMParameters&>(parameters));
+        loglikelihood = smoother.loglikelihood();
+        low_std_to_mean_penalty = parameters._penalize_low_std_to_mean_ratio(smoother.X0(), smoother.P0());
+        low_variance_Q_penalty = parameters._penalize_low_variance(smoother.Q());
+        low_variance_R_penalty = parameters._penalize_low_variance(smoother.R());
+        low_variance_P0_penalty = parameters._penalize_low_variance(smoother.P0());
+        system_inestability_penalty = parameters._penalize_inestable_system(smoother.F());
+        mean_squared_error_penalty = parameters._penalize_mean_squared_error(Y, smoother.Ys());
+        roughness_X_penalty = parameters._penalize_roughness(smoother.Xs());
+        roughness_Y_penalty = parameters._penalize_roughness(Y);
+    }
+
     // {{export}}
     KalmanSmoother kalman_smoother(matrix2d_t& Y, matrix2d_t& F, matrix2d_t& H, matrix2d_t& Q, matrix2d_t& R, matrix2d_t& X0, matrix2d_t& P0){
         KalmanSmoother kf;
@@ -1296,16 +1414,7 @@ namespace SSM::TimeInvariant {
         return kf;
     }
 
-    // it sends a reference of params, not a copy
-    KalmanSmoother kalman_smoother_from_parameters(matrix2d_t& Y, SSMParameters& params){
-        KalmanSmoother kf;
-        kf.parameters = params;
-        kf.set_Y(Y);
-        kf.set_obs_dim(_nrows(Y));
-        kf.set_lat_dim(_nrows(params.X0));
-        kf.smooth();
-        return kf;
-    }
+    
 
     // {{export}}
     void kalman_smoother_results(
@@ -1604,7 +1713,7 @@ namespace SSM::TimeInvariant {
         if(!is_none(P00)){
             estimator.parameters.lat_dim = _ncols(P00);
         }
-        if(lat_dim < 0){
+        if(lat_dim > 0){
             estimator.parameters.lat_dim = lat_dim;
         }
         estimator.parameters.obs_dim = _nrows(Y);
@@ -1643,6 +1752,630 @@ namespace SSM::TimeInvariant {
         ASSERT((abs(mean(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
         ASSERT((abs(mean(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
     }
+
+    
+    ///////////////////////////////////////////////////////////////////////////
+    // PSO Heuristic SSM Estimator
+    ///////////////////////////////////////////////////////////////////////////
+
+    struct PSOHeuristicEstimatorParticle{
+        SSMParameters params;
+        double_t metric;
+        double_t loglikelihood;
+        SSMParameters best_params;
+        double_t best_metric;
+        double_t best_loglikelihood;
+        
+        double_t penalty_factor_low_variance_Q;
+        double_t penalty_factor_low_variance_R;
+        double_t penalty_factor_low_variance_P0;
+        double_t penalty_factor_low_std_mean_ratio;
+        double_t penalty_factor_inestable_system;
+        double_t penalty_factor_mse;
+        double_t penalty_factor_roughness_X;
+        double_t penalty_factor_roughness_Y;
+
+        bool estimate_F;
+        bool estimate_H;
+        bool estimate_Q;
+        bool estimate_R;
+        bool estimate_X0;
+        bool estimate_P0;
+
+        PSOHeuristicEstimatorParticle():
+            params(),
+            metric(-1e100),
+            loglikelihood(-1e100),
+            best_params(),
+            best_metric(-1e150),
+            best_loglikelihood(-1e150),
+            
+            penalty_factor_low_variance_Q(0.0),
+            penalty_factor_low_variance_R(0.0),
+            penalty_factor_low_variance_P0(0.0),
+            penalty_factor_low_std_mean_ratio(0.0),
+            penalty_factor_inestable_system(0.0),
+            penalty_factor_mse(0.0),
+            penalty_factor_roughness_X(0.0),
+            penalty_factor_roughness_Y(0.0),
+
+            estimate_F(true),
+            estimate_H(true),
+            estimate_Q(true),
+            estimate_R(true),
+            estimate_X0(true),
+            estimate_P0(true){}
+            
+        // Assume that any param not null is fixed
+        void init(index_t obs_dim, index_t lat_dim, matrix2d_t& F0=empty_matrix2d, matrix2d_t& H0=empty_matrix2d, matrix2d_t& Q0=empty_matrix2d, matrix2d_t& R0=empty_matrix2d, matrix2d_t& X00=empty_matrix2d, matrix3d_t& P00=empty_matrix3d){
+            //this->params = SSMParameters()
+            this->params.F = matrix2d_t(F0);
+            //if(!is_none(F0)){
+            //    this->params.lat_dim = _nrows(F0)
+            this->params.H = matrix2d_t(H0);
+            //if(!is_none(H0)){
+            //    this->params.lat_dim = _ncols(H0)
+            this->params.Q = matrix2d_t(Q0);
+            //if(!is_none(Q0)){
+            //    this->params.lat_dim = _ncols(Q0)
+            this->params.R = matrix2d_t(R0);
+            this->params.X0 = matrix2d_t(X00);
+            //if(!is_none(X00)){
+            //    this->params.lat_dim = _nrows(X00)
+            this->params.P0 = matrix2d_t(P00);
+            //if(!is_none(P00)){
+            //    this->params.lat_dim = _ncols(P00)
+            //if(!is_none(lat_dim)){
+            //    this->params.lat_dim = lat_dim
+            this->params.lat_dim = lat_dim;
+            this->params.obs_dim = obs_dim;
+            this->params.random_initialize(is_none(F0), is_none(H0), is_none(Q0), is_none(R0), is_none(X00), is_none(P00));
+            this->best_params = this->params.copy();
+        }
+
+        void init_with_parameters(index_t obs_dim, const SSMParameters& parameters=empty_ssm_parameters,
+            bool est_F=true, bool est_H=true, bool est_Q=true,
+            bool est_R=true, bool est_X0=true, bool est_P0=true,
+            index_t lat_dim=-1)
+        {
+            this->params.obs_dim = obs_dim;
+            if(!is_none(parameters)){
+                //this->params = parameters.copy()
+                this->params.copy_from(parameters);
+            }else{
+                if(lat_dim < 0){
+                    throw logic_error("lat_dim unset!");
+                }
+                //this->params = SSMParameters()
+                this->params.obs_dim = obs_dim;
+                this->params.lat_dim = lat_dim;
+                this->params.random_initialize();
+            }
+            this->params.random_initialize(est_F, est_H, est_Q, est_R, est_X0, est_P0);
+            this->best_params = this->params.copy();
+        }
+        
+        void set_penalty_factors(double_t low_variance_Q=1,
+                                double_t low_variance_R=1,
+                                double_t low_variance_P0=1, 
+                                double_t low_std_mean_ratio=1, 
+                                double_t inestable_system=1, 
+                                double_t mse=0.5, 
+                                double_t roughness_X=1, 
+                                double_t roughness_Y=1){
+            this->penalty_factor_low_variance_Q = low_variance_Q;
+            this->penalty_factor_low_variance_R = low_variance_R;
+            this->penalty_factor_low_variance_P0 = low_variance_P0;
+            this->penalty_factor_low_std_mean_ratio = low_std_mean_ratio;
+            this->penalty_factor_inestable_system = inestable_system;
+            this->penalty_factor_mse = mse;
+            this->penalty_factor_roughness_X = roughness_X;
+            this->penalty_factor_roughness_Y = roughness_Y;
+        }
+        
+        void evaluate(matrix2d_t& Y, index_t index=0){
+            double_t loglikelihood;
+            double_t low_std_to_mean_penalty;
+            double_t low_variance_Q_penalty;
+            double_t low_variance_R_penalty;
+            double_t low_variance_P0_penalty;
+            double_t system_inestability_penalty;
+            double_t mean_squared_error_penalty;
+            double_t roughness_X_penalty;
+            double_t roughness_Y_penalty;
+            this->params.performance_parameters(
+                loglikelihood,
+                low_std_to_mean_penalty,
+                low_variance_Q_penalty,
+                low_variance_R_penalty,
+                low_variance_P0_penalty,
+                system_inestability_penalty,
+                mean_squared_error_penalty,
+                roughness_X_penalty,
+                roughness_Y_penalty,
+                Y);
+            
+            this->loglikelihood = loglikelihood;
+            this->metric = loglikelihood;
+            this->metric -= this->penalty_factor_low_std_mean_ratio * low_std_to_mean_penalty;
+            this->metric -= this->penalty_factor_low_variance_Q * low_variance_Q_penalty;
+            this->metric -= this->penalty_factor_low_variance_R * low_variance_R_penalty;
+            this->metric -= this->penalty_factor_low_variance_P0 * low_variance_P0_penalty;
+            this->metric -= this->penalty_factor_inestable_system * system_inestability_penalty;
+            this->metric -= this->penalty_factor_mse * mean_squared_error_penalty;
+            this->metric -= this->penalty_factor_roughness_X * roughness_X_penalty;
+            this->metric -= this->penalty_factor_roughness_Y * roughness_Y_penalty;
+            if(this->metric > this->best_metric){
+                this->best_metric = this->metric;
+                this->best_params = this->params.copy();
+                this->best_loglikelihood = this->loglikelihood;
+            }
+        }
+        
+        void set_movable_params(bool est_F, bool est_H, bool est_Q, bool est_R, bool est_X0, bool est_P0){
+            this->estimate_F = est_F;
+            this->estimate_H = est_H;
+            this->estimate_Q = est_Q;
+            this->estimate_R = est_R;
+            this->estimate_X0 = est_X0;
+            this->estimate_P0 = est_P0;
+            //!//////print("====>", this->estimate_F, this->estimate_H, this->estimate_Q, this->estimate_R, this->estimate_X0, this->estimate_P0,)
+        }
+
+        //def __move_fix(self, best_particle):
+        void move(PSOHeuristicEstimatorParticle& best_particle){
+            //print("==**>", this->estimate_F, this->estimate_H, this->estimate_Q, this->estimate_R, this->estimate_X0, this->estimate_P0,)
+            double_t move_to_self_best = 2 * randu();
+            double_t move_to_global_best = 2 * randu();
+            if(this->estimate_F){
+                this->params.F += move_to_self_best * (this->best_params.F - this->params.F) + move_to_global_best * (best_particle.best_params.F - this->params.F);
+            }
+            if(this->estimate_H){
+                this->params.H += move_to_self_best * (this->best_params.H - this->params.H) + move_to_global_best * (best_particle.best_params.H - this->params.H);
+            }
+            if(this->estimate_Q){
+                this->params.Q += move_to_self_best * (this->best_params.Q - this->params.Q) + move_to_global_best * (best_particle.best_params.Q - this->params.Q);
+                this->params.Q = 0.5 * (this->params.Q + _t(this->params.Q));
+                _set_diag_values_positive(this->params.Q);
+            }
+            if(this->estimate_R){
+                this->params.R += move_to_self_best * (this->best_params.R - this->params.R) + move_to_global_best * (best_particle.best_params.R - this->params.R);
+                this->params.R = 0.5 * (this->params.R + _t(this->params.R));
+                _set_diag_values_positive(this->params.R);
+            }
+            if(this->estimate_X0){
+                this->params.X0 += move_to_self_best * (this->best_params.X0 - this->params.X0) + move_to_global_best * (best_particle.best_params.X0 - this->params.X0);
+            }
+            if(this->estimate_P0){
+                this->params.P0 += move_to_self_best * (this->best_params.P0 - this->params.P0) + move_to_global_best * (best_particle.best_params.P0 - this->params.P0);
+                this->params.P0 = 0.5 * (this->params.P0 + _t(this->params.P0));
+                _set_diag_values_positive(this->params.P0);
+            }
+        }
+        
+        void move_flexible(PSOHeuristicEstimatorParticle& best_particle){
+            //print("==**>", this->estimate_F, this->estimate_H, this->estimate_Q, this->estimate_R, this->estimate_X0, this->estimate_P0,)
+            double_t k1 = 2.0;
+            double_t k2 = 2.0;
+            if(this->estimate_F){
+                this->params.F += k1 * randu() * (this->best_params.F - this->params.F) + k2 * randu() * (best_particle.best_params.F - this->params.F);
+            }
+            if(this->estimate_H){
+                this->params.H += k1 * randu() * (this->best_params.H - this->params.H) + k2 * randu() * (best_particle.best_params.H - this->params.H);
+            }
+            if(this->estimate_Q){
+                this->params.Q += k1 * randu() * (this->best_params.Q - this->params.Q) + k2 * randu() * (best_particle.best_params.Q - this->params.Q);
+                this->params.Q = 0.5 * (this->params.Q + _t(this->params.Q));
+                _set_diag_values_positive(this->params.Q);
+            }
+            if(this->estimate_R){
+                this->params.R += k1 * randu() * (this->best_params.R - this->params.R) + k2 * randu() * (best_particle.best_params.R - this->params.R);
+                this->params.R = 0.5 * (this->params.R + _t(this->params.R));
+                _set_diag_values_positive(this->params.R);
+            }
+            if(this->estimate_X0){
+                this->params.X0 += k1 * randu() * (this->best_params.X0 - this->params.X0) + k2 * randu() * (best_particle.best_params.X0 - this->params.X0);
+            }
+            if(this->estimate_P0){
+                this->params.P0 += k1 * randu() * (this->best_params.P0 - this->params.P0) + k2 * randu() * (best_particle.best_params.P0 - this->params.P0);
+                this->params.P0 = 0.5 * (this->params.P0 + _t(this->params.P0));
+                _set_diag_values_positive(this->params.P0);
+            }
+        }
+        
+        void copy_best_from(PSOHeuristicEstimatorParticle& other, bool force_copy=false){
+            if(other.best_metric > this->metric || force_copy){
+                this->metric = other.best_metric;
+                this->best_metric = other.best_metric;
+                this->loglikelihood = other.loglikelihood;
+                this->best_loglikelihood = other.best_loglikelihood;
+                this->params.copy_from(other.best_params);
+                this->best_params.copy_from(other.best_params);
+            }
+        }
+    };
+        
+
+    struct PurePSOHeuristicEstimator{
+        SSMParameters parameters;
+        matrix2d_t Y;
+        bool estimate_F;
+        bool estimate_H;
+        bool estimate_Q;
+        bool estimate_R;
+        bool estimate_X0;
+        bool estimate_P0;
+        vector<double_t> loglikelihood_record;
+        int_t max_iterations;
+        int_t min_iterations;
+        double_t min_improvement;
+        
+        int_t sample_size;
+        int_t population_size;
+        vector<PSOHeuristicEstimatorParticle> particles;
+        PSOHeuristicEstimatorParticle best_particle;
+
+        double_t penalty_factor_low_variance_Q;
+        double_t penalty_factor_low_variance_R;
+        double_t penalty_factor_low_variance_P0;
+        double_t penalty_factor_low_std_mean_ratio;
+        double_t penalty_factor_inestable_system;
+        double_t penalty_factor_mse;
+        double_t penalty_factor_roughness_X;
+        double_t penalty_factor_roughness_Y;
+
+        PurePSOHeuristicEstimator():
+            parameters(empty_ssm_parameters),
+            Y(),
+            estimate_F(true),
+            estimate_H(true),
+            estimate_Q(true),
+            estimate_R(true),
+            estimate_X0(true),
+            estimate_P0(true),
+            loglikelihood_record(),
+            max_iterations(10),
+            min_iterations(1),
+            min_improvement(0.01),
+            sample_size(30),
+            population_size(50),
+            particles(),
+            best_particle(),
+            penalty_factor_low_variance_Q(0.5),
+            penalty_factor_low_variance_R(0.5),
+            penalty_factor_low_variance_P0(0.5),
+            penalty_factor_low_std_mean_ratio(0.5),
+            penalty_factor_inestable_system(1),
+            penalty_factor_mse(0.25),
+            penalty_factor_roughness_X(2),
+            penalty_factor_roughness_Y(2){}
+
+        virtual PSOHeuristicEstimatorParticle _create_particle(){
+            return PSOHeuristicEstimatorParticle();
+        }
+
+        void set_parameters(matrix2d_t& Y,
+                           SSMParameters& parameters=empty_ssm_parameters,
+                           bool est_F=true, bool est_H=true, bool est_Q=true, 
+                           bool est_R=true, bool est_X0=true, bool est_P0=true, 
+                           int_t lat_dim=-1)
+        {
+            //!//////print("****==>", this->estimate_F, this->estimate_H, this->estimate_Q, this->estimate_R, this->estimate_X0, this->estimate_P0,)
+            //
+            if(!is_none(parameters)){
+                this->parameters = parameters;
+            }else{
+                this->parameters = SSMParameters();
+                this->parameters.obs_dim = _nrows(Y);
+                this->parameters.lat_dim = lat_dim;
+                if(lat_dim < 0){
+                    throw logic_error("lat_dim unset!");
+                }
+                this->parameters.random_initialize(est_F, est_H, est_Q, est_R, est_X0, est_P0);
+            }
+            //
+            this->Y = Y;
+            //this->sample_size = _ncols(Y)
+            this->estimate_F = est_F;
+            this->estimate_H = est_H;
+            this->estimate_Q = est_Q;
+            this->estimate_R = est_R;
+            this->estimate_X0 = est_X0;
+            this->estimate_P0 = est_P0;
+            //!//////print("****==>", this->estimate_F, this->estimate_H, this->estimate_Q, this->estimate_R, this->estimate_X0, this->estimate_P0,)
+            //
+            this->best_particle = this->_create_particle();
+            this->particles = {};
+            //parameters.show()
+            for_range(i, 0, this->population_size){
+                this->particles.push_back(this->_create_particle());
+                if(i == 0){
+                    this->particles[i].init_with_parameters(_nrows(Y), parameters.copy(), false, false, false, false, false, false, parameters.lat_dim);
+                }else{
+                    this->particles[i].init_with_parameters(_nrows(Y), parameters.copy(), est_F, est_H, est_Q, est_R, est_X0, est_P0, lat_dim);
+                }
+                //this->particles{i}.params.show()
+                this->particles[i].set_movable_params(est_F, est_H, est_Q, est_R, est_X0, est_P0);
+                //!//////s = this->particles{i}
+                //!//////print("****==>", s.estimate_F, s.estimate_H, s.estimate_Q, s.estimate_R, s.estimate_X0, s.estimate_P0,)
+                //this->particles[i].params.show();
+                
+                /*
+                auto OP = _create_particle();
+                OP.init_with_parameters(4, empty_ssm_parameters, true, true, true, true, true, true, 2);
+                OP.params.show();
+                OP.evaluate(this->Y);
+                double_t evald = OP.metric;
+                OP.params.show();
+                throw logic_error("x");
+                */
+                this->particles[i].set_penalty_factors(
+                    this->penalty_factor_low_variance_Q,
+                    this->penalty_factor_low_variance_R,
+                    this->penalty_factor_low_variance_P0,
+                    this->penalty_factor_low_std_mean_ratio,
+                    this->penalty_factor_inestable_system,
+                    this->penalty_factor_mse,
+                    this->penalty_factor_roughness_X,
+                    this->penalty_factor_roughness_Y
+                );
+                index_t y0;
+                matrix2d_t subY;
+                _subsample(y0, subY, this->Y, this->sample_size);
+                //this->particles[i].params.show();
+                this->particles[i].evaluate(subY, y0);
+                ///
+                this->best_particle.copy_best_from(this->particles[i], true);
+                //////print(" **  ", this->particles{i}.metric)
+                //////this->particles{i}.params.show()
+                //print("."*80); this->particles{i}.params.show()
+            }
+            //
+            //////
+            //this->parameters.show()
+            this->parameters.copy_from(this->best_particle.best_params);
+            //////
+            //this->parameters.show()
+            //
+        }
+
+        void estimation_iteration_heuristic(){
+            for_range(i, 0, this->population_size){
+                //this->particles{i}.evaluate(this->Y)
+                //print("-"*80); this->particles{i}.params.show()
+                index_t y0;
+                matrix2d_t subY;
+                _subsample(y0, subY, this->Y, this->sample_size);
+                try{
+                    this->particles[i].evaluate(subY, y0);
+                }catch(...){ //Avoid SVD convergence issues
+                    this->particles[i].metric = -1e100;
+                    this->particles[i].loglikelihood = -1e100;
+                }
+                this->best_particle.copy_best_from(this->particles[i]);
+                this->particles[i].move(this->best_particle);
+                //print("."*80); this->particles{i}.params.show()
+            }
+            this->loglikelihood_record.push_back(this->best_particle.best_loglikelihood);
+            this->parameters.copy_from(this->best_particle.best_params);
+        }
+
+        void estimate_parameters(){
+            this->estimation_iteration_heuristic();
+            for_range(i, 0, this->max_iterations){
+                this->estimation_iteration_heuristic();
+                double_t ll_1 = this->loglikelihood_record[this->loglikelihood_record.size() - 1];
+                double_t ll_2 = this->loglikelihood_record[this->loglikelihood_record.size() - 2];
+                bool unsufficient_increment = (ll_1 - ll_2) <= this->min_improvement;
+                if(unsufficient_increment && i > this->min_iterations){
+                    break;
+                }
+            }
+            KalmanSmoother ks = kalman_smoother_from_parameters(this->Y, this->parameters);
+            this->loglikelihood_record.push_back(ks.loglikelihood());
+        }
+        
+        KalmanSmoother smoother(){
+            return kalman_smoother_from_parameters(this->Y, this->parameters);
+        }
+
+    };
+
+    void test_pure_pso_1(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        params.X0(0, 0) += 1;
+        params.H(0, 0) -= 0.3;
+        params.F(0, 0) -= 0.1;
+        //params.show()
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        PurePSOHeuristicEstimator kf;
+        //kf.penalty_factor_roughness_X = 1
+        //kf.penalty_factor_roughness_Y = 1
+        kf.set_parameters(y, params);
+        //kf.estimate_parameters()
+        //kf.parameters.show();
+        KalmanSmoother s = kf.smoother();
+        s.smooth();
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean2(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
+
+    void test_pure_pso_2(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        //params.X0{0, 0} += 1
+        //params.H{0, 0} -= 0.3
+        //params.F{0, 0} -= 0.1
+        //params.show()
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        PurePSOHeuristicEstimator kf;
+        //kf.penalty_factor_roughness_X = 1
+        //kf.penalty_factor_roughness_Y = 1
+        kf.set_parameters(y, params);
+        kf.estimate_parameters();
+        //kf.parameters.show()
+        //params.show()
+        //params_orig.show()
+        KalmanSmoother s = kf.smoother();
+        s.smooth();
+        ASSERT((abs(mean2(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
+
+
+    // {{export}}
+    void estimate_using_pso(
+            /*out*/ KalmanSmoother& ks,
+            /*out*/ vector<double_t>& loglikelihood_record,
+            matrix2d_t& Y,
+            const string& estimates="",
+            matrix2d_t& F0=empty_matrix2d,
+            matrix2d_t& H0=empty_matrix2d, 
+            matrix2d_t& Q0=empty_matrix2d, 
+            matrix2d_t& R0=empty_matrix2d, 
+            matrix2d_t& X00=empty_matrix2d, 
+            matrix2d_t& P00=empty_matrix2d, 
+            index_t min_iterations=1,
+            index_t max_iterations=10, 
+            double_t min_improvement=0.01,
+            int_t lat_dim=-1,
+            index_t sample_size=30,
+            index_t population_size=50, 
+            const config_map& penalty_factors=empty_config_map
+            )
+    {
+        PurePSOHeuristicEstimator estimator;
+        estimator.Y = Y;
+        estimator.estimate_F = contains(estimates, "F");
+        estimator.estimate_H = contains(estimates, "H");
+        estimator.estimate_Q = contains(estimates, "Q");
+        estimator.estimate_R = contains(estimates, "R");
+        estimator.estimate_X0 = contains(estimates, "X0");
+        estimator.estimate_P0 = contains(estimates, "P0");
+        
+        estimator.sample_size = sample_size;
+        estimator.population_size = population_size;
+        estimator.min_iterations = min_iterations;
+        estimator.max_iterations = max_iterations;
+        estimator.min_improvement = min_improvement;
+        
+        estimator.penalty_factor_low_variance_Q = get(penalty_factors, "low_variance_Q", 0.5);
+        estimator.penalty_factor_low_variance_R = get(penalty_factors, "low_variance_R", 0.5);
+        estimator.penalty_factor_low_variance_P0 = get(penalty_factors, "low_variance_P0", 0.5);
+        estimator.penalty_factor_low_std_mean_ratio = get(penalty_factors, "low_std_mean_ratio", 0.5);
+        estimator.penalty_factor_inestable_system = get(penalty_factors, "inestable_system", 10);
+        estimator.penalty_factor_mse = get(penalty_factors, "mse", 1e-5);
+        estimator.penalty_factor_roughness_X = get(penalty_factors, "roughness_X", 0.5);
+        estimator.penalty_factor_roughness_Y = get(penalty_factors, "roughness_Y", 0.5);
+        
+        SSMParameters parameters;
+        parameters.F = F0;
+        if(!is_none(F0)){
+            parameters.lat_dim = _nrows(F0);
+        }
+        parameters.H = H0;
+        if(!is_none(H0)){
+            parameters.lat_dim = _ncols(H0);
+        }
+        parameters.Q = Q0;
+        if(!is_none(Q0)){
+            parameters.lat_dim = _ncols(Q0);
+        }
+        parameters.R = R0;
+        parameters.X0 = X00;
+        if(!is_none(X00)){
+            parameters.lat_dim = _nrows(X00);
+        }
+        parameters.P0 = P00;
+        if(!is_none(P00)){
+            parameters.lat_dim = _ncols(P00);
+        }
+        if(lat_dim > 0){
+            parameters.lat_dim = lat_dim;
+        }
+        parameters.obs_dim = _nrows(Y);
+        parameters.obs_dim = _nrows(Y);
+        parameters.random_initialize(is_none(F0), is_none(H0), is_none(Q0), is_none(R0), is_none(X00), is_none(P00));
+        estimator.set_parameters(Y, parameters, contains(estimates, "F"), contains(estimates, "H"), contains(estimates, "Q"), contains(estimates, "R"), contains(estimates, "X0"), contains(estimates, "P0"), -1);
+        estimator.estimate_parameters();
+        ks = estimator.smoother();
+        ks.smooth();
+        loglikelihood_record = estimator.loglikelihood_record;
+    }
+
+    void test_pure_pso_3(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(1000, 1);
+        matrix2d_t y(1000, 1);
+        params.simulate(x, y, 1000);
+        KalmanSmoother ks;///?
+        vector<double_t> records;///?
+        estimate_using_pso(ks, records, y,
+            "F H Q R X0 P0",
+            params.F, params.H, params.Q, params.R, params.X0, params.P0,
+            5, 30, 0.01, -1,
+            30, 50
+            //penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+        );
+        SSMParameters neoparams = ks.parameters;
+        //print(records)
+        //neoparams.show()
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean2(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+    }
+
+    void test_pure_pso_4(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(1000, 1);
+        matrix2d_t y(1000, 1);
+        params.simulate(x, y, 1000);
+        KalmanSmoother ks;///?
+        vector<double_t> records;///?
+        estimate_using_pso(ks, records, y,
+            "F H Q R X0 P0",
+            params.F, params.H, params.Q, params.R, params.X0, params.P0,
+            10, 20, 0.01, -1,
+            10, 100
+            //penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+        );
+        SSMParameters neoparams = ks.parameters;
+        //print(records)
+        //neoparams.show()
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean2(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+    }
+
         
 
 
