@@ -2,6 +2,7 @@
 #include <iostream>
 #include <typeinfo>
 #include <string>
+#include <vector>
 #include <sstream>
 #include <ctime>
 #include <cstdio>
@@ -55,6 +56,9 @@ void __assert(const char* expr_str, bool expr, const char* file, int line, const
     }
 //std::cerr << "///////////////////////////////////////////////////////////////////////////" << std::endl; \
 
+bool contains(const string& complete_text, const string& test_to_find){
+    return complete_text.find(test_to_find) != string::npos;
+}
 
 namespace SSM::TimeInvariant {
     ///////////////////////////////////////////////////////////////////////////
@@ -221,6 +225,14 @@ namespace SSM::TimeInvariant {
         ASSERT(_ncols(Y) == 2, "");
         ASSERT(Y(0, 0) == 6, "");
         ASSERT(Y(1, 0) == 22, "");
+    }
+
+    inline double_t mean2(const matrix2d_t& X){
+        return accu(X) / (_nrows(X) + _ncols(X));
+    }
+
+    inline double_t mean3(const matrix3d_t& X){
+        return accu(X) / (_nrows(X) + _ncols(X) + _nslices(X));
     }
 
     inline void _set_diag_values_positive(matrix2d_t& X){
@@ -1345,6 +1357,293 @@ namespace SSM::TimeInvariant {
         //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
         //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
     }
+
+
+    ///////////////////////////////////////////////////////////////////////////
+    // EM SSM Estimator
+    ///////////////////////////////////////////////////////////////////////////
+
+    // https://emtiyaz.github.io/papers/TBME-00664-2005.R2-preprint.pdf
+
+    struct ExpectationMaximizationEstimator{
+        
+        SSMParameters parameters;
+        matrix2d_t Y;
+        bool estimate_F;
+        bool estimate_H;
+        bool estimate_Q;
+        bool estimate_R;
+        bool estimate_X0;
+        bool estimate_P0;
+        vector<double_t> loglikelihood_record;
+        int_t max_iterations;
+        int_t min_iterations;
+        double_t min_improvement;
+        
+        
+        ExpectationMaximizationEstimator():
+            parameters(empty_ssm_parameters),
+            Y(),
+            estimate_F(true),
+            estimate_H(true),
+            estimate_Q(true),
+            estimate_R(true),
+            estimate_X0(true),
+            estimate_P0(true),
+            loglikelihood_record(),
+            max_iterations(10),
+            min_iterations(1),
+            min_improvement(0.01){}
+        
+        //
+        // Trick in C++ for optional references
+        // static double _dummy_foobar;
+        // void foo(double &bar, double &foobar = _dummy_foobar)
+        //
+        void set_parameters(matrix2d_t& Y,
+                           SSMParameters& parameters=empty_ssm_parameters,
+                           bool est_F=true, bool est_H=true, bool est_Q=true, 
+                           bool est_R=true, bool est_X0=true, bool est_P0=true, 
+                           int_t lat_dim=-1)
+        {
+            if(!is_none(parameters)){
+                this->parameters = parameters;
+            }else{
+                if(lat_dim < 0){
+                    throw logic_error("lat_dim unset!");
+                }
+                this->parameters = SSMParameters();
+                this->parameters.obs_dim = _ncols(Y);
+                this->parameters.lat_dim = lat_dim;
+                this->parameters.random_initialize();
+            }
+            this->Y = Y;
+            this->estimate_F = est_F;
+            this->estimate_H = est_H;
+            this->estimate_Q = est_Q;
+            this->estimate_R = est_R;
+            this->estimate_X0 = est_X0;
+            this->estimate_P0 = est_P0;
+        }
+
+        void estimation_iteration(){
+            KalmanSmoother ks = kalman_smoother_from_parameters(this->Y, this->parameters);
+            this->loglikelihood_record.push_back(ks.loglikelihood());
+            index_t T = _ncols(ks.Y());
+            index_t L = this->parameters.latent_signal_dimension();
+            index_t O = this->parameters.observable_signal_dimension();
+            matrix3d_t P = _zero_cube(L, L, T);
+            matrix3d_t ACF = _zero_cube(L, L, T - 1);
+
+            for_range(i, 0, T){
+                _set_slice(P, i, _slice(ks.Ps(), i) + _dot(_col(ks.Xs(), i), _t(_col(ks.Xs(), i))));
+                if(i < T - 1){
+                    _set_slice(ACF, i, _slice(ks.Cs(), i) + _dot(_col(ks.Xs(), i + 1), _t(_col(ks.Xs(), i))));
+                }
+            }
+
+            if(this->estimate_H){
+                this->parameters.H = _inv(_sum_slices(P));
+                matrix2d_t H1 = _zero_matrix(O, L);
+                for_range(t, 0, T){
+                    H1 += _dot(_col(ks.Y(), t), _t(_col(ks.Xs(), t)));
+                    //print(" ", t, _dot(_col(ks.Y(), t), _t(_col(ks.Xs(), t))))
+                }
+                this->parameters.H = _dot(H1, this->parameters.H);
+                //print("**",this->parameters.H)
+            }
+            if(this->estimate_R){
+                this->parameters.R = _zero_matrix(O, O);
+                for_range(t, 0, T){
+                    this->parameters.R += _dot(_col(ks.Y(), t), _t(_col(ks.Y(), t))) - _dot(this->parameters.H, _col(ks.Xs(), t), _t(_col(ks.Y(), t)));
+                }
+                this->parameters.R /= T;
+                // Fix math rounding errors
+                _set_diag_values_positive(this->parameters.R);
+            }
+            if(this->estimate_F){
+                this->parameters.F = _dot(_sum_slices(ACF), _inv(_sum_slices(_head_slices(P))));
+            }
+            if(this->estimate_Q){
+                this->parameters.Q = _sum_slices(_tail_slices(P)) - _dot(this->parameters.F, _t(_sum_slices(ACF)));
+                this->parameters.Q /= (T - 1);
+                _set_diag_values_positive(this->parameters.Q);
+            }
+            if(this->estimate_X0){
+                this->parameters.X0 = _col(ks.Xs(), 0);
+            }
+            if(this->estimate_P0){
+                this->parameters.P0 = _slice(ks.Ps(), 0);
+                _set_diag_values_positive(this->parameters.P0);
+            }
+            //this->parameters.show(); print("-"*80)
+        }
+
+        void estimate_parameters(){
+            this->estimation_iteration();
+            for_range(i, 0, this->max_iterations){
+                this->estimation_iteration();
+                double_t ll_1 = this->loglikelihood_record[this->loglikelihood_record.size() - 1];
+                double_t ll_2 = this->loglikelihood_record[this->loglikelihood_record.size() - 2];
+                bool unsufficient_increment = (ll_1 - ll_2) <= this->min_improvement;
+                if(unsufficient_increment && i > this->min_iterations){
+                    break;
+                }
+            }
+            KalmanSmoother ks = kalman_smoother_from_parameters(this->Y, this->parameters);
+            this->loglikelihood_record.push_back(ks.loglikelihood());
+        }
+        
+        KalmanSmoother smoother(){
+            return kalman_smoother_from_parameters(this->Y, this->parameters);
+        }
+    };
+
+    void test_expectation_maximization_1(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        params.X0(0, 0) += 1;
+        params.H(0, 0) -= 0.3;
+        params.F(0, 0) -= 0.1;
+        //params.show()
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        ExpectationMaximizationEstimator kf;
+        kf.set_parameters(y, params);
+        kf.estimate_parameters();
+        //kf.parameters.show()
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean2(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
+
+    void test_expectation_maximization_2(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        //params.X0{0, 0} += 1
+        //params.H{0, 0} -= 0.3
+        //params.F{0, 0} -= 0.1
+        //params.show()
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        ExpectationMaximizationEstimator kf;
+        kf.set_parameters(y, params);
+        kf.estimate_parameters();
+        //kf.parameters.show()
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+        ASSERT((abs(mean(params.X0) - mean(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)");
+        ASSERT((abs(mean(params.F) - mean(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)");
+        ASSERT((abs(mean(params.H) - mean(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)");
+        ASSERT((abs(mean(params.X0) - mean(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)");
+        ASSERT((abs(mean(params.F) - mean(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)");
+        ASSERT((abs(mean(params.H) - mean(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
+
+    // {{export}}
+    void estimate_using_em(
+            /*out*/ KalmanSmoother& ks,
+            /*out*/ vector<double_t>& loglikelihood_record,
+            matrix2d_t& Y,
+            const string& estimates="",
+            matrix2d_t& F0=empty_matrix2d,
+            matrix2d_t& H0=empty_matrix2d, 
+            matrix2d_t& Q0=empty_matrix2d, 
+            matrix2d_t& R0=empty_matrix2d, 
+            matrix2d_t& X00=empty_matrix2d, 
+            matrix2d_t& P00=empty_matrix2d, 
+            index_t min_iterations=1,
+            index_t max_iterations=10, 
+            double_t min_improvement=0.01,
+            int_t lat_dim=-1)
+    {
+        ExpectationMaximizationEstimator estimator;
+        estimator.Y = Y;
+        estimator.estimate_F = contains(estimates, "F");
+        estimator.estimate_H = contains(estimates, "H");
+        estimator.estimate_Q = contains(estimates, "Q");
+        estimator.estimate_R = contains(estimates, "R");
+        estimator.estimate_X0 = contains(estimates, "X0");
+        estimator.estimate_P0 = contains(estimates, "P0");
+        estimator.parameters = SSMParameters();
+        estimator.parameters.F = F0;
+        if(!is_none(F0)){
+            estimator.parameters.lat_dim = _nrows(F0);
+        }
+        estimator.parameters.H = H0;
+        if(!is_none(H0)){
+            estimator.parameters.lat_dim = _ncols(H0);
+        }
+        estimator.parameters.Q = Q0;
+        if(!is_none(Q0)){
+            estimator.parameters.lat_dim = _ncols(Q0);
+        }
+        estimator.parameters.R = R0;
+        estimator.parameters.X0 = X00;
+        if(!is_none(X00)){
+            estimator.parameters.lat_dim = _nrows(X00);
+        }
+        estimator.parameters.P0 = P00;
+        if(!is_none(P00)){
+            estimator.parameters.lat_dim = _ncols(P00);
+        }
+        if(lat_dim < 0){
+            estimator.parameters.lat_dim = lat_dim;
+        }
+        estimator.parameters.obs_dim = _nrows(Y);
+        estimator.parameters.obs_dim = _nrows(Y);
+        //
+        estimator.min_iterations = min_iterations;
+        estimator.max_iterations = max_iterations;
+        estimator.min_improvement = min_improvement;
+        //
+        estimator.parameters.random_initialize(
+            is_none(F0), is_none(H0), is_none(Q0), 
+            is_none(R0), is_none(X00), is_none(P00));
+        estimator.estimate_parameters();
+        ks = estimator.smoother();
+        ks.smooth();
+        loglikelihood_record = estimator.loglikelihood_record;
+    }
+
+    void test_expectation_maximization_3(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        KalmanSmoother ks;
+        vector<double_t> records;
+        estimate_using_em(ks, records, y,
+            "F H Q R X0 P0",
+            params.F, params.H, params.Q, params.R, params.X0, params.P0,
+            1, 10, 0.01, -1);
+        SSMParameters neoparams = ks.parameters;
+        //print(records)
+        //neoparams.show()
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+    }
+        
 
 
     ///////////////////////////////////////////////////////////////////////////
