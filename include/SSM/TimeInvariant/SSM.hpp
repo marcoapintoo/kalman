@@ -129,19 +129,6 @@ namespace SSM::TimeInvariant {
 
     static config_map empty_config_map;
 
-    struct BaseKalmanSmoother{
-        virtual double_t loglikelihood(){return 0.0;}
-        matrix2d_t empty;
-        virtual matrix2d_t& X0(){return empty;}
-        virtual matrix2d_t& P0(){return empty;}
-        virtual matrix2d_t& Q(){return empty;}
-        virtual matrix2d_t& R(){return empty;}
-        virtual matrix2d_t& F(){return empty;}
-        virtual matrix2d_t& H(){return empty;}
-        virtual matrix2d_t& Xs(){return empty;}
-        virtual matrix2d_t& Ys(){return empty;}
-    };
-
     ///////////////////////////////////////////////////////////////////////////
     ///  Math cross-platform functions
     ///////////////////////////////////////////////////////////////////////////
@@ -517,7 +504,8 @@ namespace SSM::TimeInvariant {
         return mvnrnd(mean, cov);
     }
 
-    inline matrix2d_t _covariance_matrix_estimation(matrix2d_t& X){// # unbiased estimation
+    inline matrix2d_t _covariance_matrix_estimation(const matrix2d_t& X1){// # unbiased estimation
+        matrix2d_t& X = const_cast<matrix2d_t&>(X1);
         matrix2d_t Q = -1 * _dot(_sum_cols(X), _t(_sum_cols(X))) / _ncols(X);
         for_range(t, 0, _ncols(X)){
             Q += _dot(_col(X, t), _t(_col(X, t)));
@@ -988,14 +976,13 @@ namespace SSM::TimeInvariant {
     X{t} = F X{t-1} + N(0, Q)
     Y{t} = H X{t} + N(0, R)
     */
-    struct KalmanFilter: public BaseKalmanSmoother{
+    struct KalmanFilter{
         SSMParameters parameters;
         SSMEstimated filtered_estimates;
         SSMEstimated predicted_estimates;
         matrix2d_t _Y;
 
         KalmanFilter():
-            BaseKalmanSmoother(),
             parameters(), 
             filtered_estimates(), 
             predicted_estimates(), 
@@ -1363,6 +1350,10 @@ namespace SSM::TimeInvariant {
         //ASSERT(round(std(ks.Xf()), 2) >= round(std(ks.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
     }
 
+    KalmanSmoother kalman_smoother_from_parameters(matrix2d_t& Y, const SSMParameters& params){
+        return kalman_smoother_from_parameters(Y, const_cast<SSMParameters&>(params));
+    }
+
     KalmanSmoother kalman_smoother_from_parameters(matrix2d_t& Y, SSMParameters& params){
         // Avoid memory leak in Win10 with the previous one.
         KalmanSmoother kf;
@@ -1386,7 +1377,7 @@ namespace SSM::TimeInvariant {
                 matrix2d_t& Y,
                 void* _parameters){
         SSMParameters& parameters = *((SSMParameters*)_parameters);
-        KalmanSmoother smoother = kalman_smoother_from_parameters(Y, const_cast<SSMParameters&>(parameters));
+        KalmanSmoother smoother = kalman_smoother_from_parameters(Y, parameters);
         loglikelihood = smoother.loglikelihood();
         low_std_to_mean_penalty = parameters._penalize_low_std_to_mean_ratio(smoother.X0(), smoother.P0());
         low_variance_Q_penalty = parameters._penalize_low_variance(smoother.Q());
@@ -1873,7 +1864,7 @@ namespace SSM::TimeInvariant {
             this->penalty_factor_roughness_Y = roughness_Y;
         }
         
-        void evaluate(matrix2d_t& Y, index_t index=0){
+        virtual void evaluate(matrix2d_t& Y, index_t index=0){
             double_t loglikelihood;
             double_t low_std_to_mean_penalty;
             double_t low_variance_Q_penalty;
@@ -2376,7 +2367,527 @@ namespace SSM::TimeInvariant {
         ASSERT((abs(mean2(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
     }
 
+    
+    ///////////////////////////////////////////////////////////////////////////
+    // Self improvable estimator
+    ///////////////////////////////////////////////////////////////////////////
+    struct SelfImproveHeuristicEstimatorParticle: public PSOHeuristicEstimatorParticle{
+
+        SelfImproveHeuristicEstimatorParticle():
+            PSOHeuristicEstimatorParticle(){}
         
+        virtual void improve_params(matrix2d_t& Y, index_t index=0){
+            //DO nothing;
+        }
+        
+        virtual void evaluate(matrix2d_t& Y, index_t index=0){
+            PSOHeuristicEstimatorParticle::evaluate(Y, index);
+            double_t prev_metric = this->metric;
+            SSMParameters prev_parameters = this->params.copy();
+            this->improve_params(Y, index);
+            PSOHeuristicEstimatorParticle::evaluate(Y, index);
+            if(prev_metric > this->metric){
+                this->metric = prev_metric;
+                this->params.copy_from(prev_parameters);
+            }
+        }
+    };
+    ///////////////////////////////////////////////////////////////////////////
+    // LSE Heuristic SSM Estimator
+    ///////////////////////////////////////////////////////////////////////////
+    struct LSEHeuristicEstimatorParticle: public SelfImproveHeuristicEstimatorParticle{
+
+        LSEHeuristicEstimatorParticle():
+            SelfImproveHeuristicEstimatorParticle(){}
+        
+        void improve_params(matrix2d_t& Y, index_t index=0){
+            //this->params.show(); print()
+            try{
+                KalmanSmoother ks = kalman_smoother_from_parameters(Y, this->params.copy());
+                matrix2d_t X = ks.Xs();
+                if(this->estimate_H){
+                    // Y = H X + N(0, R)
+                    // <H> = Y * X' * inv(X * X')' 
+                    this->params.H = _dot(Y, _t(X), _t(_inv(_dot(X, _t(X)))));
+                }
+                if(this->estimate_R){
+                    // <R> = var(Y - H X)
+                    this->params.R = _covariance_matrix_estimation(Y - _dot(this->params.H, X));
+                }
+                if(this->estimate_F){
+                    // X{1..T} = F X{0..T-1} + N(0, R)
+                    // <F> = X1 * X0' * inv(X0 * X0')'
+                    matrix2d_t X0 = _head_cols(X);
+                    matrix2d_t X1 = _tail_cols(X);
+                    this->params.F = _dot(X1, _t(X0), _t(_inv(_dot(X0, _t(X0)))));
+                }
+                matrix2d_t inv_H = _inv(this->params.H);
+                if(this->estimate_X0){
+                    // Y{0} = H X{0} + N(0, R)
+                    // <X{0}> = inv(H) Y{0}
+                    matrix2d_t X0 = _col(X, 0);//_dot(inv_H, _col(Y, 0))
+                    matrix2d_t inv_F = _inv(this->params.F);
+                    // IMPROVE!
+                    for_range(_, 0, index){
+                        X0 = _dot(inv_F, X0);
+                    }
+                    this->params.X0 = X0;
+                }
+                if(this->estimate_P0){
+                    // <X{0}> = inv(H) Y{0} => VAR<X{0}> = inv(H) var(Y{0}) inv(H)' 
+                    // P{0} = inv(H) R inv(H)'
+                    this->params.P0 = _dot(inv_H, this->params.R, _t(inv_H));
+                }
+                if(this->estimate_Q){
+                    // <Q> = var(X1 - F X0)
+                    matrix2d_t X0 = _head_cols(X);
+                    matrix2d_t X1 = _tail_cols(X);
+                    this->params.Q = _covariance_matrix_estimation(X1 - _dot(this->params.F, X0));
+                }
+                //this->params.show()
+                //sys.exit(0)
+            }catch(...){
+            }
+        }
+    };
+
+    struct LSEHeuristicEstimator: public PurePSOHeuristicEstimator{
+        LSEHeuristicEstimator(): PurePSOHeuristicEstimator(){}
+
+        virtual PSOHeuristicEstimatorParticle _create_particle(){
+            return LSEHeuristicEstimatorParticle();
+        }
+    };
+
+    void test_pure_lse_pso_1(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        params.X0(0, 0) += 1;
+        params.H(0, 0) -= 0.3;
+        params.F(0, 0) -= 0.1;
+        //params.show()
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        LSEHeuristicEstimator kf;
+        //kf.penalty_factor_roughness_X = 1
+        //kf.penalty_factor_roughness_Y = 1
+        kf.set_parameters(y, params);
+        //kf.estimate_parameters()
+        //kf.parameters.show();
+        KalmanSmoother s = kf.smoother();
+        s.smooth();
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean2(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
+
+    void test_pure_lse_pso_2(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        //params.X0{0, 0} += 1
+        //params.H{0, 0} -= 0.3
+        //params.F{0, 0} -= 0.1
+        //params.show()
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        LSEHeuristicEstimator kf;
+        //kf.penalty_factor_roughness_X = 1
+        //kf.penalty_factor_roughness_Y = 1
+        kf.set_parameters(y, params);
+        kf.estimate_parameters();
+        //kf.parameters.show()
+        //params.show()
+        //params_orig.show()
+        KalmanSmoother s = kf.smoother();
+        s.smooth();
+        ASSERT((abs(mean2(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
+
+    // {{export}}
+    void estimate_using_lse_pso(
+            /*out*/ KalmanSmoother& ks,
+            /*out*/ vector<double_t>& loglikelihood_record,
+            matrix2d_t& Y,
+            const string& estimates="",
+            matrix2d_t& F0=empty_matrix2d,
+            matrix2d_t& H0=empty_matrix2d, 
+            matrix2d_t& Q0=empty_matrix2d, 
+            matrix2d_t& R0=empty_matrix2d, 
+            matrix2d_t& X00=empty_matrix2d, 
+            matrix2d_t& P00=empty_matrix2d, 
+            index_t min_iterations=1,
+            index_t max_iterations=10, 
+            double_t min_improvement=0.01,
+            int_t lat_dim=-1,
+            index_t sample_size=30,
+            index_t population_size=50, 
+            const config_map& penalty_factors=empty_config_map
+            )
+    {
+        LSEHeuristicEstimator estimator;
+        estimator.Y = Y;
+        estimator.estimate_F = contains(estimates, "F");
+        estimator.estimate_H = contains(estimates, "H");
+        estimator.estimate_Q = contains(estimates, "Q");
+        estimator.estimate_R = contains(estimates, "R");
+        estimator.estimate_X0 = contains(estimates, "X0");
+        estimator.estimate_P0 = contains(estimates, "P0");
+        
+        estimator.sample_size = sample_size;
+        estimator.population_size = population_size;
+        estimator.min_iterations = min_iterations;
+        estimator.max_iterations = max_iterations;
+        estimator.min_improvement = min_improvement;
+        
+        estimator.penalty_factor_low_variance_Q = get(penalty_factors, "low_variance_Q", 0.5);
+        estimator.penalty_factor_low_variance_R = get(penalty_factors, "low_variance_R", 0.5);
+        estimator.penalty_factor_low_variance_P0 = get(penalty_factors, "low_variance_P0", 0.5);
+        estimator.penalty_factor_low_std_mean_ratio = get(penalty_factors, "low_std_mean_ratio", 0.5);
+        estimator.penalty_factor_inestable_system = get(penalty_factors, "inestable_system", 10);
+        estimator.penalty_factor_mse = get(penalty_factors, "mse", 1e-5);
+        estimator.penalty_factor_roughness_X = get(penalty_factors, "roughness_X", 0.5);
+        estimator.penalty_factor_roughness_Y = get(penalty_factors, "roughness_Y", 0.5);
+        
+        SSMParameters parameters;
+        parameters.F = F0;
+        if(!is_none(F0)){
+            parameters.lat_dim = _nrows(F0);
+        }
+        parameters.H = H0;
+        if(!is_none(H0)){
+            parameters.lat_dim = _ncols(H0);
+        }
+        parameters.Q = Q0;
+        if(!is_none(Q0)){
+            parameters.lat_dim = _ncols(Q0);
+        }
+        parameters.R = R0;
+        parameters.X0 = X00;
+        if(!is_none(X00)){
+            parameters.lat_dim = _nrows(X00);
+        }
+        parameters.P0 = P00;
+        if(!is_none(P00)){
+            parameters.lat_dim = _ncols(P00);
+        }
+        if(lat_dim > 0){
+            parameters.lat_dim = lat_dim;
+        }
+        parameters.obs_dim = _nrows(Y);
+        parameters.obs_dim = _nrows(Y);
+        parameters.random_initialize(is_none(F0), is_none(H0), is_none(Q0), is_none(R0), is_none(X00), is_none(P00));
+        estimator.set_parameters(Y, parameters, contains(estimates, "F"), contains(estimates, "H"), contains(estimates, "Q"), contains(estimates, "R"), contains(estimates, "X0"), contains(estimates, "P0"), -1);
+        estimator.estimate_parameters();
+        ks = estimator.smoother();
+        ks.smooth();
+        loglikelihood_record = estimator.loglikelihood_record;
+    }
+
+    void test_pure_lse_pso_3(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(1000, 1);
+        matrix2d_t y(1000, 1);
+        params.simulate(x, y, 1000);
+        KalmanSmoother ks;///?
+        vector<double_t> records;///?
+        estimate_using_lse_pso(ks, records, y,
+            "F H Q R X0 P0",
+            params.F, params.H, params.Q, params.R, params.X0, params.P0,
+            5, 30, 0.01, -1,
+            30, 50
+            //penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+        );
+        SSMParameters neoparams = ks.parameters;
+        //print(records)
+        //neoparams.show()
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean2(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+    }
+
+    void test_pure_lse_pso_4(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(1000, 1);
+        matrix2d_t y(1000, 1);
+        params.simulate(x, y, 1000);
+        KalmanSmoother ks;///?
+        vector<double_t> records;///?
+        estimate_using_lse_pso(ks, records, y,
+            "F H Q R X0 P0",
+            params.F, params.H, params.Q, params.R, params.X0, params.P0,
+            10, 20, 0.01, -1,
+            10, 100
+            //penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+        );
+        SSMParameters neoparams = ks.parameters;
+        //print(records)
+        //neoparams.show()
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean2(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+    }
+
+
+    ///////////////////////////////////////////////////////////////////////////
+    // EM Heuristic SSM Estimator
+    ///////////////////////////////////////////////////////////////////////////
+    struct EMHeuristicEstimatorParticle: public SelfImproveHeuristicEstimatorParticle{
+
+        EMHeuristicEstimatorParticle():
+            SelfImproveHeuristicEstimatorParticle(){}
+        
+        void improve_params(matrix2d_t& Y, index_t index=0){
+            ExpectationMaximizationEstimator subestimator;
+            subestimator.Y = Y;
+            subestimator.estimate_F = this->estimate_F;
+            subestimator.estimate_H = this->estimate_H;
+            subestimator.estimate_Q = this->estimate_Q;
+            subestimator.estimate_R = this->estimate_R;
+            subestimator.estimate_X0 = this->estimate_X0;
+            subestimator.estimate_P0 = this->estimate_P0;
+            //print(
+            //    "subestimator:",
+            //    subestimator.estimate_F,
+            //    subestimator.estimate_H,
+            //    subestimator.estimate_Q,
+            //    subestimator.estimate_R,
+            //    subestimator.estimate_X0,
+            //    subestimator.estimate_P0,
+            //)
+            subestimator.parameters = this->params;
+            //estimator.parameters.random_initialize(is_none(F0), is_none(H0), is_none(Q0), is_none(R0), is_none(X00), is_none(P00))
+            subestimator.estimation_iteration();
+            this->params.copy_from(subestimator.parameters);
+        }
+    };
+
+    struct EMHeuristicEstimator: public PurePSOHeuristicEstimator{
+        EMHeuristicEstimator(): PurePSOHeuristicEstimator(){}
+
+        virtual PSOHeuristicEstimatorParticle _create_particle(){
+            return EMHeuristicEstimatorParticle();
+        }
+    };
+
+    void test_pure_em_pso_1(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        params.X0(0, 0) += 1;
+        params.H(0, 0) -= 0.3;
+        params.F(0, 0) -= 0.1;
+        //params.show()
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        EMHeuristicEstimator kf;
+        //kf.penalty_factor_roughness_X = 1
+        //kf.penalty_factor_roughness_Y = 1
+        kf.set_parameters(y, params);
+        //kf.estimate_parameters()
+        //kf.parameters.show();
+        KalmanSmoother s = kf.smoother();
+        s.smooth();
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean2(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
+
+    void test_pure_em_pso_2(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        //params.X0{0, 0} += 1
+        //params.H{0, 0} -= 0.3
+        //params.F{0, 0} -= 0.1
+        //params.show()
+        matrix2d_t x(100, 1);
+        matrix2d_t y(100, 1);
+        params.simulate(x, y, 100);
+        EMHeuristicEstimator kf;
+        //kf.penalty_factor_roughness_X = 1
+        //kf.penalty_factor_roughness_Y = 1
+        kf.set_parameters(y, params);
+        kf.estimate_parameters();
+        //kf.parameters.show()
+        //params.show()
+        //params_orig.show()
+        KalmanSmoother s = kf.smoother();
+        s.smooth();
+        ASSERT((abs(mean2(params.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(params.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(params.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) <= 0.15 * 50), "Failed simulation: mean(X0 est) !~= mean(X0 pred)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) <= 0.15 * 1), "Failed simulation: mean(F est) !~= mean(F orig)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) <= 0.15 * 10), "Failed simulation: mean(H est) !~= mean(H orig)");
+        ASSERT((abs(mean2(params.X0) - mean2(params_orig.X0)) > 0), "Failed simulation: mean(X0 est) == mean(X0 pred) (it was copied?)");
+        ASSERT((abs(mean2(params.F) - mean2(params_orig.F)) > 0), "Failed simulation: mean(F est) == mean(F orig) (it was copied?)");
+        ASSERT((abs(mean2(params.H) - mean2(params_orig.H)) > 0), "Failed simulation: mean(H est) == mean(H orig) (it was copied?)");
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xp()), 2) >= round(std(kf.Xf()), 2), "Failed simulation: std(X pred) < std(X filter)")
+        //ASSERT(round(std(kf.Xf()), 2) >= round(std(kf.Xs()), 2), "Failed simulation: std(X filter) < std(X smooth)")
+    }
+
+    // {{export}}
+    void estimate_using_em_pso(
+            /*out*/ KalmanSmoother& ks,
+            /*out*/ vector<double_t>& loglikelihood_record,
+            matrix2d_t& Y,
+            const string& estimates="",
+            matrix2d_t& F0=empty_matrix2d,
+            matrix2d_t& H0=empty_matrix2d, 
+            matrix2d_t& Q0=empty_matrix2d, 
+            matrix2d_t& R0=empty_matrix2d, 
+            matrix2d_t& X00=empty_matrix2d, 
+            matrix2d_t& P00=empty_matrix2d, 
+            index_t min_iterations=1,
+            index_t max_iterations=10, 
+            double_t min_improvement=0.01,
+            int_t lat_dim=-1,
+            index_t sample_size=30,
+            index_t population_size=50, 
+            const config_map& penalty_factors=empty_config_map
+            )
+    {
+        EMHeuristicEstimator estimator;
+        estimator.Y = Y;
+        estimator.estimate_F = contains(estimates, "F");
+        estimator.estimate_H = contains(estimates, "H");
+        estimator.estimate_Q = contains(estimates, "Q");
+        estimator.estimate_R = contains(estimates, "R");
+        estimator.estimate_X0 = contains(estimates, "X0");
+        estimator.estimate_P0 = contains(estimates, "P0");
+        
+        estimator.sample_size = sample_size;
+        estimator.population_size = population_size;
+        estimator.min_iterations = min_iterations;
+        estimator.max_iterations = max_iterations;
+        estimator.min_improvement = min_improvement;
+        
+        estimator.penalty_factor_low_variance_Q = get(penalty_factors, "low_variance_Q", 0.5);
+        estimator.penalty_factor_low_variance_R = get(penalty_factors, "low_variance_R", 0.5);
+        estimator.penalty_factor_low_variance_P0 = get(penalty_factors, "low_variance_P0", 0.5);
+        estimator.penalty_factor_low_std_mean_ratio = get(penalty_factors, "low_std_mean_ratio", 0.5);
+        estimator.penalty_factor_inestable_system = get(penalty_factors, "inestable_system", 10);
+        estimator.penalty_factor_mse = get(penalty_factors, "mse", 1e-5);
+        estimator.penalty_factor_roughness_X = get(penalty_factors, "roughness_X", 0.5);
+        estimator.penalty_factor_roughness_Y = get(penalty_factors, "roughness_Y", 0.5);
+        
+        SSMParameters parameters;
+        parameters.F = F0;
+        if(!is_none(F0)){
+            parameters.lat_dim = _nrows(F0);
+        }
+        parameters.H = H0;
+        if(!is_none(H0)){
+            parameters.lat_dim = _ncols(H0);
+        }
+        parameters.Q = Q0;
+        if(!is_none(Q0)){
+            parameters.lat_dim = _ncols(Q0);
+        }
+        parameters.R = R0;
+        parameters.X0 = X00;
+        if(!is_none(X00)){
+            parameters.lat_dim = _nrows(X00);
+        }
+        parameters.P0 = P00;
+        if(!is_none(P00)){
+            parameters.lat_dim = _ncols(P00);
+        }
+        if(lat_dim > 0){
+            parameters.lat_dim = lat_dim;
+        }
+        parameters.obs_dim = _nrows(Y);
+        parameters.obs_dim = _nrows(Y);
+        parameters.random_initialize(is_none(F0), is_none(H0), is_none(Q0), is_none(R0), is_none(X00), is_none(P00));
+        estimator.set_parameters(Y, parameters, contains(estimates, "F"), contains(estimates, "H"), contains(estimates, "Q"), contains(estimates, "R"), contains(estimates, "X0"), contains(estimates, "P0"), -1);
+        estimator.estimate_parameters();
+        ks = estimator.smoother();
+        ks.smooth();
+        loglikelihood_record = estimator.loglikelihood_record;
+    }
+
+    void test_pure_em_pso_3(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(1000, 1);
+        matrix2d_t y(1000, 1);
+        params.simulate(x, y, 1000);
+        KalmanSmoother ks;///?
+        vector<double_t> records;///?
+        estimate_using_em_pso(ks, records, y,
+            "F H Q R X0 P0",
+            params.F, params.H, params.Q, params.R, params.X0, params.P0,
+            5, 30, 0.01, -1,
+            30, 50
+            //penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+        );
+        SSMParameters neoparams = ks.parameters;
+        //print(records)
+        //neoparams.show()
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean2(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+    }
+
+    void test_pure_em_pso_4(){
+        SSMParameters params = _create_params_ones_kx1(colvec({-50}), colvec({10}));
+        matrix2d_t x(1000, 1);
+        matrix2d_t y(1000, 1);
+        params.simulate(x, y, 1000);
+        KalmanSmoother ks;///?
+        vector<double_t> records;///?
+        estimate_using_em_pso(ks, records, y,
+            "F H Q R X0 P0",
+            params.F, params.H, params.Q, params.R, params.X0, params.P0,
+            10, 20, 0.01, -1,
+            10, 100
+            //penalty_factors=(0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.5, 0.5)
+        );
+        SSMParameters neoparams = ks.parameters;
+        //print(records)
+        //neoparams.show()
+        //params.show()
+        //params_orig.show()
+        ASSERT((abs(mean2(neoparams.X0) - -50) <= 0.15 * 50), "Failed simulation: mean(X0 pred) != true mean");
+        ASSERT((abs(mean2(neoparams.F) - 1) <= 0.15 * 1), "Failed simulation: mean(F pred) != true mean");
+        ASSERT((abs(mean2(neoparams.H) - 10) <= 0.15 * 10), "Failed simulation: mean(H pred) != true mean");
+    }
 
 
     ///////////////////////////////////////////////////////////////////////////
