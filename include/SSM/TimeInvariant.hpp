@@ -191,9 +191,12 @@ namespace SSM::TimeInvariant {
     __inline__ void _subsample(/*out*/ index_t& i0, /*out*/ matrix2d_t& Ysampled, const matrix2d_t& Y, index_t sample_size){
         if(sample_size >= _ncols(Y)){
             i0 = 0;
-            Ysampled = matrix2d_t(Y);
+            Ysampled = Y;//matrix2d_t(Y);
+            return;
         }
-        i0 = randi<index_t>(distr_param(0, _ncols(Y) - sample_size - 1));
+        i0 = randi<index_t>(
+            distr_param(0, max((index_t) 0, _ncols(Y) - sample_size - 1))
+        );
         Ysampled = matrix2d_t(Y.cols(i0, i0 + sample_size));
     }
 

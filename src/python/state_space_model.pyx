@@ -210,6 +210,60 @@ cdef double_t* tovector1(matrix1d_t X):
         return <double_t*>0
     return <double_t*>&X[0]
 
+cdef index_t* tovector1_i(index_t[:] X):
+    if X is None:
+        return <index_t*>0
+    return <index_t*>&X[0]
+
+
+cpdef estimate(str type_of_estimator,
+    str estimates,
+    np.ndarray Y,
+    index_t obs_dim=-1,
+    index_t lat_dim=-1,
+    index_t T=-1,
+    np.ndarray F=None, np.ndarray H=None, 
+    np.ndarray Q=None, np.ndarray R=None, 
+    np.ndarray X0=None, np.ndarray P0=None,
+    index_t min_iterations=1,
+    index_t max_iterations=20, 
+    double_t min_improvement=0.01,
+    index_t sample_size=30,
+    index_t population_size=50,
+    double_t penalty_low_variance_Q=0.5,
+    double_t penalty_low_variance_R=0.5,
+    double_t penalty_low_variance_P0=0.5,
+    double_t penalty_low_std_mean_ratio=0.5,
+    double_t penalty_inestable_system=10.0,
+    double_t penalty_mse=1e-5,
+    double_t penalty_roughness_X=0.5,
+    double_t penalty_roughness_Y=0.5,
+    int max_length_loglikelihood=1000,
+    bool return_details=False):
+    return estimate_ssm(
+        type_of_estimator, estimates, np.array(Y, dtype="f8"),
+        obs_dim, lat_dim, T,
+        np.array(F, dtype="f8"),
+        np.array(H, dtype="f8"),
+        np.array(Q, dtype="f8"),
+        np.array(R, dtype="f8"),
+        np.array(X0, dtype="f8"),
+        np.array(P0, dtype="f8"),
+        min_iterations,
+        max_iterations, 
+        min_improvement,
+        sample_size,
+        population_size,
+        penalty_low_variance_Q,
+        penalty_low_variance_R,
+        penalty_low_variance_P0,
+        penalty_low_std_mean_ratio,
+        penalty_inestable_system,
+        penalty_mse,
+        penalty_roughness_X,
+        penalty_roughness_Y,
+        max_length_loglikelihood,
+        return_details)
 
 cpdef estimate_ssm(str type_of_estimator,
     str estimates,
@@ -241,6 +295,7 @@ cpdef estimate_ssm(str type_of_estimator,
     cdef const char* _estimates = estimates1
     cdef str dtype = "f8"
     cdef matrix1d_t loglikelihood_record = np.zeros(max_length_loglikelihood, dtype=dtype)
+    #
     cdef matrix2d_t Xp = np.zeros((lat_dim, T), dtype=dtype)
     cdef matrix3d_t Pp = np.zeros((lat_dim, lat_dim, T), dtype=dtype)
     cdef matrix2d_t Yp = np.zeros((obs_dim, T), dtype=dtype)
@@ -250,6 +305,17 @@ cpdef estimate_ssm(str type_of_estimator,
     cdef matrix2d_t Xs = np.zeros((lat_dim, T), dtype=dtype)
     cdef matrix3d_t Ps = np.zeros((lat_dim, lat_dim, T), dtype=dtype)
     cdef matrix2d_t Ys = np.zeros((obs_dim, T), dtype=dtype)
+    #
+    cdef index_t[:] obs_dim_new = np.zeros((1), dtype="i8")
+    cdef index_t[:] lat_dim_new = np.zeros((1), dtype="i8")
+    cdef index_t[:] T_new = np.zeros((1), dtype="i8")
+    cdef matrix2d_t F_new  = np.zeros((lat_dim, lat_dim), dtype=dtype)
+    cdef matrix2d_t H_new  = np.zeros((obs_dim, lat_dim), dtype=dtype)
+    cdef matrix2d_t Q_new  = np.zeros((lat_dim, lat_dim), dtype=dtype)
+    cdef matrix2d_t R_new  = np.zeros((obs_dim, obs_dim), dtype=dtype)
+    cdef matrix2d_t X0_new = np.zeros((lat_dim, 1), dtype=dtype)
+    cdef matrix2d_t P0_new = np.zeros((lat_dim, lat_dim), dtype=dtype)
+    #
 
     cdef void* kalman_smoother = _estimate_ssm(
             _type_of_estimator,
@@ -281,8 +347,17 @@ cpdef estimate_ssm(str type_of_estimator,
         tovector2(Xs), tovector3(Ps), tovector2(Ys),
         kalman_smoother)
     
+    _kalman_smoother_parameters(
+        tovector1_i(obs_dim_new), tovector1_i(lat_dim_new), tovector1_i(T_new),
+        tovector2(F_new), tovector2(H_new), tovector2(Q_new),
+        tovector2(R_new), tovector2(X0_new), tovector2(P0_new),
+        kalman_smoother)
+    
     if return_details:
         return (
+            np.array(F_new), np.array(H_new), np.array(Q_new),
+            np.array(R_new), np.array(X0_new), np.array(P0_new),
+            #
             np.array(Xp), np.array(Pp), np.array(Yp),
             np.array(Xf), np.array(Pf), np.array(Yf),
             np.array(Xs), np.array(Ps), np.array(Ys),
