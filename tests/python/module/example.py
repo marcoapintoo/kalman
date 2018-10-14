@@ -28,7 +28,15 @@ np.random.seed(42)
 Y = np.random.randn(2, 100)
 Y[0, :] += 10
 Y[1, :] += 50
-X1, Y1 = ssm.estimate_ssm("pso", estimates="F H Q R X0 P0", Y=Y, obs_dim=2, lat_dim=1, T=100)
+X1, Y1 = ssm.estimate_ssm("pso", estimates="F H Q R X0 P0", Y=Y, obs_dim=2, lat_dim=1, T=100, penalty_mse=1e4, population_size=1000, )
 print(Y)
+print(Y1)
+(
+    Xp, Pp, Yp,
+    Xf, Pf, Yf,
+    Xs, Ps, Ys,
+    ll_record
+) = ssm.estimate_ssm("pso", estimates="F H Q R X0 P0", Y=Y, obs_dim=2, lat_dim=1, T=100, penalty_mse=0.1, return_details=True)
+print(Xs)
 print(Y1)
 

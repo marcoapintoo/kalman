@@ -1,9 +1,10 @@
 # https://wiki.gentoo.org/wiki/GCC_optimization/es
 CXX             := g++
 #CXX_FLAGS := -Wall -Wextra -std=c++17 -ggdb
-CXX_FLAGS       := -w -std=c++17 -ggdb
+#CXX_FLAGS       := -w -std=c++17 -ggdb
+CXX_FLAGS       := -w -std=c++17
 CYTHON          := cython
-CYTHON_FLAGS    :=  -3 --embed
+CYTHON_FLAGS    :=  -3 --embed --cplus
 
 BIN             := bin
 SRC             := src/cpp
@@ -13,6 +14,7 @@ INCLUDE         := include
 LIB             := lib
 
 LIBRARIES        := -march=native -O3 -ftree-vectorize 
+#LIBRARIES        := -O0
 LIBRARIES        += -DARMA_DONT_USE_WRAPPER -DARMA_USE_BLAS -DARMA_USE_LAPACK -DARMA_USE_HDF5
 LIBRARIES        += -DNDEBUG
 LIBRARIES        += -lopenblas -llapack -lhdf5 -lfftw3
@@ -22,6 +24,7 @@ EXECUTABLE       := state_space_model
 PYMODULE         := state_space_model.pyd
 
 TEST_PYTHON_MODULE := $(PYSRC)/test_state_space_model.py
+TEST_PYTHON_MODULE := tests/python/module/example.py
 
 CYTHON_PYX_FILES := $(wildcard $(PYSRC)/*.pyx)
 CYTHON_CPP_FILES := $(patsubst $(PYSRC)/%.pyx,$(PYSRCOUT)/%.cpp,$(CYTHON_PYX_FILES))
@@ -33,8 +36,8 @@ CYTHON_CPP_FILES := $(patsubst $(PYSRC)/%.pyx,$(PYSRCOUT)/%.cpp,$(CYTHON_PYX_FIL
 
 .PHONY: all
 
-#all: clean $(BIN)/$(PYMODULE)# $(BIN)/$(EXECUTABLE)
-all: clean $(BIN)/$(EXECUTABLE)
+all: clean $(BIN)/$(PYMODULE)# $(BIN)/$(EXECUTABLE)
+#all: clean $(BIN)/$(EXECUTABLE)
 
 pytest:
 	python -u $(TEST_PYTHON_MODULE)
@@ -52,6 +55,7 @@ $(BIN)/$(PYMODULE): $(CYTHON_CPP_FILES)
 	$(CXX) $(CXX_FLAGS) -I$(INCLUDE) -L$(LIB) -fPIC $^ -shared -o $@ $(LIBRARIES) 
 
 $(PYSRCOUT)/%.cpp:
+	-mkdir $(PYSRCOUT)
 	$(CYTHON) $(CYTHON_FLAGS) -o $(PYSRCOUT)/$*.cpp $(PYSRC)/$*.pyx
 
 clean:

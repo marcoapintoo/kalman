@@ -283,9 +283,9 @@ cpdef estimate_ssm(str type_of_estimator,
     
     if return_details:
         return (
-            Xp, Pp, Yp,
-            Xf, Pf, Yf,
-            Xs, Ps, Ys,
-            loglikelihood_record
+            np.array(Xp), np.array(Pp), np.array(Yp),
+            np.array(Xf), np.array(Pf), np.array(Yf),
+            np.array(Xs), np.array(Ps), np.array(Ys),
+            np.array(loglikelihood_record)
         )
-    return (Xs, Ys)
+    return (np.array(Xs), np.array(Ys))

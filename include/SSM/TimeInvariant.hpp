@@ -12,9 +12,11 @@
 #include <armadillo>
 
 #include <SSM/Utils.hpp>
-
 using namespace std;
 using namespace arma;
+
+//#define __inline__ inline
+#define __inline__
 
 namespace SSM::TimeInvariant {
     ///////////////////////////////////////////////////////////////////////////
@@ -39,65 +41,65 @@ namespace SSM::TimeInvariant {
     ///  Math cross-platform functions
     ///////////////////////////////////////////////////////////////////////////
 
-    inline bool is_none(const matrix1d_t& X){
+    __inline__ bool is_none(const matrix1d_t& X){
         return addressof(X) == addressof(empty_matrix1d);
     }
 
-    inline bool is_none(const matrix2d_t& X){
+    __inline__ bool is_none(const matrix2d_t& X){
         return addressof(X) == addressof(empty_matrix2d);
     }
 
-    inline bool is_none(const matrix3d_t& X){
+    __inline__ bool is_none(const matrix3d_t& X){
         return addressof(X) == addressof(empty_matrix3d);
     }
 
-    inline auto size(matrix1d_t& X){
+    __inline__ auto size(matrix1d_t& X){
         return arma::size((const matrix1d_t&) X);
     }
-    inline auto size(matrix2d_t& X){
+    __inline__ auto size(matrix2d_t& X){
         return arma::size((const matrix2d_t&) X);
     }
-    inline auto size(matrix3d_t& X){
+    __inline__ auto size(matrix3d_t& X){
         return arma::size((const matrix3d_t&) X);
     }
 
-    inline index_t _nrows(const matrix2d_t& X){
+    __inline__ index_t _nrows(const matrix2d_t& X){
         return X.n_rows;
     }
     
-    inline index_t _ncols(const matrix2d_t& X){
+    __inline__ index_t _ncols(const matrix2d_t& X){
         return X.n_cols;
     }
     
-    inline index_t _nrows(const matrix3d_t& X){
+    __inline__ index_t _nrows(const matrix3d_t& X){
         return X.n_rows;
     }
     
-    inline index_t _ncols(const matrix3d_t& X){
+    __inline__ index_t _ncols(const matrix3d_t& X){
         return X.n_cols;
     }
     
-    inline index_t _nslices(const matrix3d_t& X){
+    __inline__ index_t _nslices(const matrix3d_t& X){
         return X.n_slices;
     }
 
-    inline matrix2d_t _inv(const matrix2d_t& X){
+    __inline__ matrix2d_t _inv(const matrix2d_t& X){
         return pinv(X);
     }
 
-    inline matrix2d_t _create_noised_values(index_t L, index_t M){
+    __inline__ matrix2d_t _create_noised_values(index_t L, index_t M){
         return randn(L, M);
     }
 
-    inline matrix2d_t _create_noised_ones(index_t L, index_t M, double factor=0.5){
+    __inline__ matrix2d_t _create_noised_ones(index_t L, index_t M, double factor=0.5){
         return ones<matrix2d_t>(L, M) + factor * randn(L, M);
     }
 
-    inline matrix2d_t _create_noised_zeros(index_t L, index_t M, double factor=0.5){
+    __inline__ matrix2d_t _create_noised_zeros(index_t L, index_t M, double factor=0.5){
         return zeros<matrix2d_t>(L, M) + factor * randn(L, M);
     }
 
-    inline matrix2d_t _create_noised_diag(index_t L, index_t M, double factor=0.5){
+    __inline__ matrix2d_t _create_noised_diag(index_t L, index_t M, double factor=0.5){
         return eye<matrix2d_t>(L, M) + factor * randn(L, M);
     }
 
@@ -138,7 +140,7 @@ namespace SSM::TimeInvariant {
         }
     }
 
-    inline matrix2d_t _sum_slices(const matrix3d_t& X){
+    __inline__ matrix2d_t _sum_slices(const matrix3d_t& X){
         return sum(X, 2);
     }
 
@@ -161,7 +163,7 @@ namespace SSM::TimeInvariant {
         ASSERT(Y(0, 0) == 4, "");
     }
 
-    inline matrix2d_t _sum_cols(const matrix2d_t& X){
+    __inline__ matrix2d_t _sum_cols(const matrix2d_t& X){
         return sum(X, 1);
     }
 
@@ -174,19 +176,19 @@ namespace SSM::TimeInvariant {
         ASSERT(Y(1, 0) == 22, "");
     }
 
-    inline double_t mean2(const matrix2d_t& X){
+    __inline__ double_t mean2(const matrix2d_t& X){
         return accu(X) / (_nrows(X) + _ncols(X));
     }
 
-    inline double_t mean3(const matrix3d_t& X){
+    __inline__ double_t mean3(const matrix3d_t& X){
         return accu(X) / (_nrows(X) + _ncols(X) + _nslices(X));
     }
 
-    inline void _set_diag_values_positive(matrix2d_t& X){
+    __inline__ void _set_diag_values_positive(matrix2d_t& X){
         X.diag() = abs(X.diag());
     }
 
-    inline void _subsample(/*out*/ index_t& i0, /*out*/ matrix2d_t& Ysampled, const matrix2d_t& Y, index_t sample_size){
+    __inline__ void _subsample(/*out*/ index_t& i0, /*out*/ matrix2d_t& Ysampled, const matrix2d_t& Y, index_t sample_size){
         if(sample_size >= _ncols(Y)){
             i0 = 0;
             Ysampled = matrix2d_t(Y);
@@ -195,7 +197,7 @@ namespace SSM::TimeInvariant {
         Ysampled = matrix2d_t(Y.cols(i0, i0 + sample_size));
     }
 
-    inline matrix2d_t _dot(initializer_list<matrix2d_t> vars){
+    __inline__ matrix2d_t _dot(initializer_list<matrix2d_t> vars){
         matrix2d_t p;
         int i = 0;
         for(matrix2d_t v: vars){
@@ -208,19 +210,19 @@ namespace SSM::TimeInvariant {
         }
     }
 
-    inline matrix2d_t _dot(const matrix2d_t& v1){
+    __inline__ matrix2d_t _dot(const matrix2d_t& v1){
         return v1;
     }
 
-    inline matrix2d_t _dot(const matrix2d_t& v1, const matrix2d_t& v2){
+    __inline__ matrix2d_t _dot(const matrix2d_t& v1, const matrix2d_t& v2){
         return v1 * v2;
     }
 
-    inline matrix2d_t _dot(const matrix2d_t& v1, const matrix2d_t& v2, const matrix2d_t& v3){
+    __inline__ matrix2d_t _dot(const matrix2d_t& v1, const matrix2d_t& v2, const matrix2d_t& v3){
         return v1 * v2 * v3;
     }
 
-    inline matrix2d_t _dot(const matrix2d_t& v1, const matrix2d_t& v2, const matrix2d_t& v3, const matrix2d_t& v4){
+    __inline__ matrix2d_t _dot(const matrix2d_t& v1, const matrix2d_t& v2, const matrix2d_t& v3, const matrix2d_t& v4){
         return v1 * v2 * v3 * v4;
     }
 
@@ -254,11 +256,11 @@ namespace SSM::TimeInvariant {
         }
     }
 
-    inline matrix2d_t _t(const matrix2d_t& X){
+    __inline__ matrix2d_t _t(const matrix2d_t& X){
         return X.t();
     }
 
-    inline matrix2d_t _row(const matrix2d_t& X, index_t k){
+    __inline__ matrix2d_t _row(const matrix2d_t& X, index_t k){
         return X.row(k);
     }
 
@@ -269,7 +271,7 @@ namespace SSM::TimeInvariant {
         ASSERT(_nrows(Y) == 1, "");
     }
 
-    inline matrix2d_t _col(matrix2d_t& X, index_t k){
+    __inline__ matrix2d_t _col(matrix2d_t& X, index_t k){
         return X.col(k);
     }
 
@@ -280,7 +282,7 @@ namespace SSM::TimeInvariant {
         ASSERT(_nrows(Y) == 3, "");
     }
 
-    inline matrix2d_t _slice(matrix3d_t& X, index_t k){
+    __inline__ matrix2d_t _slice(matrix3d_t& X, index_t k){
         return X.slice(k);
     }
 
@@ -292,51 +294,51 @@ namespace SSM::TimeInvariant {
         ASSERT(_nrows(Y) == 3, "");
     }
 
-    inline void _set_row(matrix2d_t& X, index_t k, const matrix2d_t& v){
+    __inline__ void _set_row(matrix2d_t& X, index_t k, const matrix2d_t& v){
         X.row(k) = v;
     }
 
-    inline void _set_col(matrix2d_t& X, index_t k, const matrix2d_t& v){
+    __inline__ void _set_col(matrix2d_t& X, index_t k, const matrix2d_t& v){
         X.col(k) = v;
     }
     
-    inline void _set_slice(matrix3d_t& X, index_t k, const matrix2d_t& v){
+    __inline__ void _set_slice(matrix3d_t& X, index_t k, const matrix2d_t& v){
         X.slice(k) = v;
     }
     
-    inline matrix2d_t _one_matrix(index_t L, index_t M){
+    __inline__ matrix2d_t _one_matrix(index_t L, index_t M){
         return ones<matrix2d_t>(L, M);
     }
     
-    inline matrix2d_t _zero_matrix(index_t L, index_t M){
+    __inline__ matrix2d_t _zero_matrix(index_t L, index_t M){
         return zeros<matrix2d_t>(L, M);
     }
     
-    inline matrix3d_t _zero_cube(index_t L, index_t M, index_t N){
+    __inline__ matrix3d_t _zero_cube(index_t L, index_t M, index_t N){
         return zeros<matrix3d_t>(L, M, N);
     }
     
-    inline matrix2d_t _diag_matrix(index_t L, index_t M){
+    __inline__ matrix2d_t _diag_matrix(index_t L, index_t M){
         return eye<matrix2d_t>(L, M);
     }
     
-    inline void _no_finite_to_zero(matrix2d_t& A){
+    __inline__ void _no_finite_to_zero(matrix2d_t& A){
         A.elem(find_nonfinite(A)).zeros();
     }
     
-    inline matrix3d_t _head_slices(matrix3d_t& X){
+    __inline__ matrix3d_t _head_slices(matrix3d_t& X){
         return matrix3d_t(X.head_slices(_nslices(X) - 1));
     }
 
-    inline matrix3d_t _tail_slices(matrix3d_t& X){
+    __inline__ matrix3d_t _tail_slices(matrix3d_t& X){
         return matrix3d_t(X.tail_slices(_nslices(X) - 1));
     }
 
-    inline matrix2d_t _head_cols(matrix2d_t& X){
+    __inline__ matrix2d_t _head_cols(matrix2d_t& X){
         return matrix2d_t(X.head_cols(_ncols(X) - 1));
     }
 
-    inline matrix2d_t _tail_cols(matrix2d_t& X){
+    __inline__ matrix2d_t _tail_cols(matrix2d_t& X){
         return matrix2d_t(X.tail_cols(_ncols(X) - 1));
     }
 
@@ -346,11 +348,11 @@ namespace SSM::TimeInvariant {
     ///////////////////////////////////////////////////////////////////////////
 
     
-    inline double _mvn_probability(const matrix2d_t& x, const matrix2d_t& mean, const matrix2d_t& cov){
+    __inline__ double _mvn_probability(const matrix2d_t& x, const matrix2d_t& mean, const matrix2d_t& cov){
         return exp(-0.5 * as_scalar(_dot(_t(x - mean), _inv(cov), (x - mean)))) / sqrt(2 * datum::pi * det(cov));
     }
 
-    inline double _mvn_logprobability(const matrix2d_t& x, const matrix2d_t& mean, const matrix2d_t& cov){
+    __inline__ double _mvn_logprobability(const matrix2d_t& x, const matrix2d_t& mean, const matrix2d_t& cov){
         return (-0.5 * as_scalar(_dot(_t(x - mean), _inv(cov), (x - mean))) - 0.5 * log(2 * datum::pi) - 0.5 * log(det(cov)));
     }
     
@@ -406,11 +408,11 @@ namespace SSM::TimeInvariant {
         ASSERT(abs(cdf - 1) < 1e-2, "Bad integration!");
     }
 
-    inline matrix2d_t _mvn_sample(matrix2d_t& mean, matrix2d_t& cov){
+    __inline__ matrix2d_t _mvn_sample(matrix2d_t& mean, matrix2d_t& cov){
         return mvnrnd(mean, cov);
     }
 
-    inline matrix2d_t _covariance_matrix_estimation(const matrix2d_t& X1){// # unbiased estimation
+    __inline__ matrix2d_t _covariance_matrix_estimation(const matrix2d_t& X1){// # unbiased estimation
         matrix2d_t& X = const_cast<matrix2d_t&>(X1);
         matrix2d_t Q = -1 * _dot(_sum_cols(X), _t(_sum_cols(X))) / _ncols(X);
         for_range(t, 0, _ncols(X)){
@@ -445,7 +447,7 @@ namespace SSM::TimeInvariant {
     ///  Roughness measurement
     ///////////////////////////////////////////////////////////////////////////
     
-    inline matrix2d_t standarized_signal(matrix2d_t& y){
+    __inline__ matrix2d_t standarized_signal(matrix2d_t& y){
         matrix2d_t y_mean = mean(y, 1);
         matrix2d_t y_stddev = stddev(y, 0, 1);
         matrix2d_t y_std(_nrows(y), _ncols(y));
@@ -454,7 +456,7 @@ namespace SSM::TimeInvariant {
         }
         return y_std;
     }
-    inline double_t _measure_roughness_proposed(matrix2d_t& y0, index_t M=10){
+    __inline__ double_t _measure_roughness_proposed(matrix2d_t& y0, index_t M=10){
         index_t cols = _nrows(y0);//M
         matrix2d_t y = reshape(y0.head_cols(cols * M), cols, M);
         matrix2d_t ystd = standarized_signal(y);
@@ -463,7 +465,7 @@ namespace SSM::TimeInvariant {
         return mean(mean(abs(ystd)));
     }
 
-    inline double_t _measure_roughness(matrix2d_t& X, index_t M=10){
+    __inline__ double_t _measure_roughness(matrix2d_t& X, index_t M=10){
         double_t roughness = 0;
         for_range(k, 0, _nrows(X)){
             matrix2d_t Xk = _row(X, k);
@@ -654,7 +656,7 @@ namespace SSM::TimeInvariant {
         // Evaluation
         ///////////////////////////////////////////////////////////////////////
 
-        inline double_t _penalize_low_std_to_mean_ratio(matrix2d_t& X0, matrix2d_t& P0){
+        __inline__ double_t _penalize_low_std_to_mean_ratio(matrix2d_t& X0, matrix2d_t& P0){
             /*
             We expect that the variance must be
             low compared with the mean:
@@ -672,7 +674,7 @@ namespace SSM::TimeInvariant {
             return 100 * std/mean_;
         }
             
-        inline double_t _penalize_low_variance(matrix2d_t& X){
+        __inline__ double_t _penalize_low_variance(matrix2d_t& X){
             /*
             penalty RULE:
             0.0001          10
@@ -691,7 +693,7 @@ namespace SSM::TimeInvariant {
             //return 0.1/ ((X / (pow(mean(X, 1), 2))).max());
         }
         
-        inline double_t _penalize_inestable_system(matrix2d_t& X){
+        __inline__ double_t _penalize_inestable_system(matrix2d_t& X){
             /*
             penalty
             eigenvalues of X    penalty
@@ -704,11 +706,11 @@ namespace SSM::TimeInvariant {
             return sum(pow(abs(eigval), 2));
         }
 
-        inline double_t _mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
+        __inline__ double_t _mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
             return mean(pow(vectorise(Y) - vectorise(Ys), 2));
         }
 
-        inline double_t _penalize_mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
+        __inline__ double_t _penalize_mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
             double_t maxv = -1e10;
             for_range(i, 0, _nrows(Y)){
                 matrix2d_t Yi = _row(Y, i);
@@ -721,7 +723,7 @@ namespace SSM::TimeInvariant {
             return maxv;
         }
         
-        inline double_t _penalize_roughness(matrix2d_t& X){
+        __inline__ double_t _penalize_roughness(matrix2d_t& X){
             return _measure_roughness(X);
         }
 
@@ -799,7 +801,7 @@ namespace SSM::TimeInvariant {
     };
 
     static SSMParameters empty_ssm_parameters;
-    inline bool is_none(const SSMParameters& X){
+    __inline__ bool is_none(const SSMParameters& X){
         return addressof(X) == addressof(empty_ssm_parameters);
     }
     
@@ -2799,14 +2801,20 @@ namespace SSM::TimeInvariant {
     ///////////////////////////////////////////////////////////////////////////
     
     // {{export-c}}
+    #define create_pointer_handler_empty(Name, KlassType, EmptyName) \
+        __inline__ KlassType* c_new_##Name(){ return new KlassType();} \
+        __inline__ void c_del_##Name(KlassType* p){ if(addressof(*p) != addressof(EmptyName)) delete p;} \
+        export_function void* _new_##Name(){ return reinterpret_cast<void*>(new KlassType());} \
+        export_function void _del_##Name(void* p){ delete reinterpret_cast<KlassType*>(p);}
+    
     #define create_pointer_handler(Name, KlassType) \
-        inline KlassType* c_new_##Name(){ return new KlassType();} \
-        inline void c_del_##Name(KlassType* p){ delete p;} \
+        __inline__ KlassType* c_new_##Name(){ return new KlassType();} \
+        __inline__ void c_del_##Name(KlassType* p){ delete p;} \
         export_function void* _new_##Name(){ return reinterpret_cast<void*>(new KlassType());} \
         export_function void _del_##Name(void* p){ delete reinterpret_cast<KlassType*>(p);}
 
-    create_pointer_handler(matrix2d, matrix2d_t)
-    create_pointer_handler(matrix3d, matrix3d_t)
+    create_pointer_handler_empty(matrix2d, matrix2d_t, empty_matrix2d)
+    create_pointer_handler_empty(matrix3d, matrix3d_t, empty_matrix3d)
     create_pointer_handler(ssm_parameters, SSMParameters)
     create_pointer_handler(ssm_estimated, SSMEstimated)
     create_pointer_handler(kalman_filter, KalmanFilter)
@@ -2833,13 +2841,13 @@ namespace SSM::TimeInvariant {
         return reinterpret_cast<void*>(matrix);
     }
     
-    inline matrix2d_t* c_create_matrix2d_from(double* data, index_t n_rows, index_t n_cols){
+    __inline__ matrix2d_t* c_create_matrix2d_from(double* data, index_t n_rows, index_t n_cols){
         return reinterpret_cast<matrix2d_t*>(
             _create_matrix2d_from(data, n_rows, n_cols)
         );
     }
 
-    inline void c_fill_array_from2d(double* data, matrix2d_t* matrix){
+    __inline__ void c_fill_array_from2d(double* data, matrix2d_t* matrix){
         if(matrix == nullptr) return;
         index_t n_rows = matrix->n_rows;
         index_t n_cols = matrix->n_cols;
@@ -2855,7 +2863,7 @@ namespace SSM::TimeInvariant {
         c_fill_array_from2d(data, reinterpret_cast<matrix2d_t*>(matrix));
     }
 
-    inline void c_fill_array_from3d(double* data, matrix3d_t* matrix){
+    __inline__ void c_fill_array_from3d(double* data, matrix3d_t* matrix){
         if(matrix == nullptr) return;
         index_t n_rows = matrix->n_rows;
         index_t n_cols = matrix->n_cols;
@@ -2874,7 +2882,7 @@ namespace SSM::TimeInvariant {
         c_fill_array_from3d(data, reinterpret_cast<matrix3d_t*>(matrix));
     }
 
-    inline void c_fill_array_from_vector(double* data, vector<double_t>& vec){
+    __inline__ void c_fill_array_from_vector(double* data, vector<double_t>& vec){
         index_t k = 0;
         for (auto i: vec){
             data[k++] = i;
@@ -3202,10 +3210,6 @@ namespace SSM::TimeInvariant {
         KalmanSmoother* ks = c_new_kalman_smoother();
         *ks = estimator.smoother();
         ks->smooth();
-        cout << "estimator.loglikelihood_record" << endl;
-        for (auto i: estimator.loglikelihood_record)
-            cout << i << ' ';
-        cout << "estimator.loglikelihood_record" << endl;
         if(loglikelihood_record != nullptr){
             c_fill_array_from_vector(loglikelihood_record, estimator.loglikelihood_record);
         }
