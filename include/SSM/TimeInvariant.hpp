@@ -15,8 +15,8 @@
 using namespace std;
 using namespace arma;
 
-//#define __inline__ inline
-#define __inline__
+#define __inline__ inline
+//#define __inline__
 
 namespace SSM::TimeInvariant {
     ///////////////////////////////////////////////////////////////////////////
@@ -710,7 +710,12 @@ namespace SSM::TimeInvariant {
         }
 
         __inline__ double_t _mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
-            return mean(pow(vectorise(Y) - vectorise(Ys), 2));
+            //return mean(pow(vectorise(Y) - vectorise(Ys), 2));
+            return mean(pow(vectorise(Y) - vectorise(Ys), 2)) / (
+                mean(pow(vectorise(Y), 2)) *
+                mean(pow(vectorise(Ys), 2))
+                + 1e-100
+            );
         }
 
         __inline__ double_t _penalize_mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
@@ -723,7 +728,7 @@ namespace SSM::TimeInvariant {
                     maxv = v;
                 }
             }
-            return maxv;
+            return sqrt(maxv);
         }
         
         __inline__ double_t _penalize_roughness(matrix2d_t& X){
@@ -1122,7 +1127,10 @@ namespace SSM::TimeInvariant {
     // Kalman Smoother
     ///////////////////////////////////////////////////////////////////////////
 
+    const double_t MAX_LIKELIHOOD_ALLOWED = 100;
+
     struct KalmanSmoother: public KalmanFilter{
+        
         string type_of_likelihood;
         SSMEstimated smoothed_estimates;
         
@@ -1183,14 +1191,17 @@ namespace SSM::TimeInvariant {
             return log_likelihood / (this->T() - 1);
         }
         
-        double_t loglikelihood(){
+        virtual double_t loglikelihood(){
+            double_t ll = 0;
             if(this->type_of_likelihood == "filter")
-                return this->loglikelihood_filter();
-            if(this->type_of_likelihood == "smooth")
-                return this->loglikelihood_filter();
-            if(this->type_of_likelihood == "function-q")
-                return this->loglikelihood_filter();
-            throw logic_error("Wrong loglikelihood type!");
+                ll = this->loglikelihood_filter();
+            else if(this->type_of_likelihood == "smooth")
+                ll = this->loglikelihood_smooth();
+            else if(this->type_of_likelihood == "function-q")
+                ll = this->loglikelihood_qfunction();
+            else
+                throw logic_error("Wrong loglikelihood type!");
+            return min(ll, MAX_LIKELIHOOD_ALLOWED);
         }
         
         void smooth(bool filter=true){
@@ -1222,6 +1233,7 @@ namespace SSM::TimeInvariant {
         }
 
     };
+    
 
 
     void test_smoother_1(){
@@ -3346,6 +3358,63 @@ namespace SSM::TimeInvariant {
             penalty_mse,
             penalty_roughness_X,
             penalty_roughness_Y);
+    }
+
+    // {{export-c}}
+    export_function void _performance_of_parameters(
+            /*out*/ double_t* loglikelihood, 
+            /*out*/ double_t* low_std_to_mean_penalty, 
+            /*out*/ double_t* low_variance_Q_penalty, 
+            /*out*/ double_t* low_variance_R_penalty, 
+            /*out*/ double_t* low_variance_P0_penalty, 
+            /*out*/ double_t* system_inestability_penalty, 
+            /*out*/ double_t* mean_squared_error_penalty, 
+            /*out*/ double_t* roughness_X_penalty, 
+            /*out*/ double_t* roughness_Y_penalty, 
+            index_t obs_dim, index_t lat_dim, index_t T,
+            double_t* Y,
+            double_t* F, double_t* H, 
+            double_t* Q, double_t* R, 
+            double_t* X0, double_t* P0)
+    {
+        matrix2d_t* _Y = c_create_matrix2d_from(Y, obs_dim, T);
+        matrix2d_t* _F = c_create_matrix2d_from(F, lat_dim, lat_dim);
+        matrix2d_t* _H = c_create_matrix2d_from(H, obs_dim, lat_dim);
+        matrix2d_t* _Q = c_create_matrix2d_from(Q, lat_dim, lat_dim);
+        matrix2d_t* _R = c_create_matrix2d_from(R, obs_dim, obs_dim);
+        matrix2d_t* _X0 = c_create_matrix2d_from(X0, lat_dim, 1);
+        matrix2d_t* _P0 = c_create_matrix2d_from(P0, lat_dim, lat_dim);
+        //
+        SSMParameters parameters;
+        parameters.F = *_F;
+        parameters.H = *_H;
+        parameters.Q = *_Q;
+        parameters.R = *_R;
+        parameters.X0 = *_X0;
+        parameters.P0 = *_P0;
+        parameters.lat_dim = lat_dim;
+        parameters.obs_dim = obs_dim;
+        //
+        KalmanSmoother smoother = kalman_smoother_from_parameters(*_Y, parameters);
+        *loglikelihood = smoother.loglikelihood();
+        *low_std_to_mean_penalty = parameters._penalize_low_std_to_mean_ratio(smoother.X0(), smoother.P0());
+        *low_variance_Q_penalty = parameters._penalize_low_variance(smoother.Q());
+        *low_variance_R_penalty = parameters._penalize_low_variance(smoother.R());
+        *low_variance_P0_penalty = parameters._penalize_low_variance(smoother.P0());
+        *system_inestability_penalty = parameters._penalize_inestable_system(smoother.F());
+        *mean_squared_error_penalty = parameters._penalize_mean_squared_error(*_Y, smoother.Ys());
+        *roughness_X_penalty = parameters._penalize_roughness(smoother.Xs());
+        *roughness_Y_penalty = parameters._penalize_roughness(*_Y);
+
+        //
+        c_del_matrix2d(_Y);
+        c_del_matrix2d(_F);
+        c_del_matrix2d(_H);
+        c_del_matrix2d(_Q);
+        c_del_matrix2d(_R);
+        c_del_matrix2d(_X0);
+        c_del_matrix2d(_P0);
+        //
     }
 
     ///////////////////////////////////////////////////////////////////////////
