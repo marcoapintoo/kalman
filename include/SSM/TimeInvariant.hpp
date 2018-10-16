@@ -87,8 +87,8 @@ namespace SSM::TimeInvariant {
         return pinv(X);
     }
 
-    __inline__ matrix2d_t _create_noised_values(index_t L, index_t M){
-        return randn(L, M);
+    __inline__ matrix2d_t _create_noised_values(index_t L, index_t M, double factor=1){
+        return factor * randn(L, M);
     }
 
     __inline__ matrix2d_t _create_noised_ones(index_t L, index_t M, double factor=0.5){
@@ -186,6 +186,45 @@ namespace SSM::TimeInvariant {
 
     __inline__ void _set_diag_values_positive(matrix2d_t& X){
         X.diag() = abs(X.diag());
+    }
+
+    static double_t MINIMUM_COVARIANCE_ALLOWED = -10;
+    static double_t MINIMUM_VARIANCE_ALLOWED = 0.01;
+    static double_t MAXIMUM_COVARIANCE_ALLOWED =  10;
+
+    __inline__ void _closest_positive_definite_matrix(matrix2d_t& X){
+        /*
+        // Fool implementation
+        X = 0.5 * (X.t() + X);
+        X.diag() = abs(X.diag());
+        for_range(r, 0, _nrows(X)){
+            for_range(c, 0, r){
+                X(r, c) = min(abs(X(r, c)), X(r, r) * X(c, c)) * (X(r, c) < 0? -1: 1);
+                X(c, r) = X(r, c);
+            }
+        }
+        */
+        
+        //https://math.stackexchange.com/questions/648809/how-to-find-closest-positive-definite-matrix-of-non-symmetric-matrix
+        X = 0.5 * (X.t() + X);
+        X = clamp(X, MINIMUM_COVARIANCE_ALLOWED, MAXIMUM_COVARIANCE_ALLOWED);
+        X.diag() = clamp(abs(X.diag()), MINIMUM_VARIANCE_ALLOWED, MAXIMUM_COVARIANCE_ALLOWED);
+        matrix1d_t eigval;
+        matrix2d_t eigvec;
+        eig_sym(eigval, eigvec, X);
+        matrix2d_t eigvalmat(_nrows(eigval), _nrows(eigval), fill::zeros);
+        eigvalmat.diag() = abs(eigval);
+        X = eigvec * eigvalmat * eigvec.t();
+        
+        /*
+        X = 0.5 * (X.t() + X);
+        X.diag() = abs(X.diag());
+        for_range(r, 0, _nrows(X)){
+            for_range(c, 0, _ncols(X)){
+                X(r, c) = min(abs(X(r, c)), X(r, r) * X(c, c)) * (X(r, c) < 0? -1: 1);
+            }
+        }
+        */
     }
 
     __inline__ void _subsample(/*out*/ index_t& i0, /*out*/ matrix2d_t& Ysampled, const matrix2d_t& Y, index_t sample_size){
@@ -586,19 +625,34 @@ namespace SSM::TimeInvariant {
             cout << " Initial latent var-covar matrix: " << this->P0 << endl;
         }
 
-        void random_initialize(bool init_F=true, bool init_H=true, bool init_Q=true, bool init_R=true, bool init_X0=true, bool init_P0=true){
+        void random_initialize(bool init_F=true, bool init_H=true, bool init_Q=true, bool init_R=true, bool init_X0=true, bool init_P0=true, double_t random_spread=0.5){
             if(this->lat_dim < 0){
                 throw logic_error("Latent signal dimension is unset!");
             }
             if( this->obs_dim < 0){
                 throw logic_error("Observable signal dimension is unset!");
             }
-            if (init_F) this->F = _create_noised_ones(this->lat_dim, this->lat_dim);
-            if (init_Q) this->Q = _create_noised_diag(this->lat_dim, this->lat_dim);
-            if (init_X0) this->X0 = _create_noised_values(this->lat_dim, 1);
-            if (init_P0) this->P0 = _create_noised_diag(this->lat_dim, this->lat_dim);
-            if (init_H) this->H = _create_noised_ones(this->obs_dim, this->lat_dim);
-            if (init_R) this->R = _create_noised_diag(this->obs_dim, this->obs_dim);
+            if (init_F){
+                this->F = _create_noised_ones(this->lat_dim, this->lat_dim, random_spread);
+            }
+            if (init_Q){
+                this->Q = _create_noised_diag(this->lat_dim, this->lat_dim, random_spread);
+                _closest_positive_definite_matrix(this->Q);
+            }
+            if (init_X0){
+                this->X0 = _create_noised_values(this->lat_dim, 1, random_spread);
+            }
+            if (init_P0){
+                this->P0 = _create_noised_diag(this->lat_dim, this->lat_dim, random_spread);
+                _closest_positive_definite_matrix(this->P0);
+            }
+            if (init_H){
+                this->H = _create_noised_ones(this->obs_dim, this->lat_dim, random_spread);
+            }
+            if (init_R){
+                this->R = _create_noised_diag(this->obs_dim, this->obs_dim, random_spread);
+                _closest_positive_definite_matrix(this->R);
+            }
         }
         
         void simulate(/*out*/ matrix2d_t& X, /*out*/ matrix2d_t& Y, index_t N, matrix2d_t& X0=empty_matrix2d, matrix2d_t& P0=empty_matrix2d){
@@ -710,16 +764,28 @@ namespace SSM::TimeInvariant {
         }
 
         __inline__ double_t _mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
-            //return mean(pow(vectorise(Y) - vectorise(Ys), 2));
-            return mean(pow(vectorise(Y) - vectorise(Ys), 2)) / (
-                mean(pow(vectorise(Y), 2)) *
-                mean(pow(vectorise(Ys), 2))
+            //coefficient of determination
+            return mean(pow(vectorise(Y) - vectorise(Ys), 2));
+            //http://brenocon.com/rsquared_is_mse_rescaled.pdf
+            /*return mean(pow(vectorise(Y) - vectorise(Ys), 2)) / (
+                mean(pow(vectorise(Y) - mean(vectorise(Y)), 2))
+                //var(vectorise(Y)) *
+                //mean(pow(vectorise(Ys), 2))
                 + 1e-100
-            );
+            );*/
         }
 
         __inline__ double_t _penalize_mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
-            double_t maxv = -1e10;
+            //return accu(pow(vectorise(Y) - vectorise(Ys), 2)) / (_nrows(Y) + _ncols(Y) + 1);
+            //return accu(pow(vectorise(Y) - vectorise(Ys), 2)) / (accu(pow(vectorise(Y), 2)) * accu(pow(vectorise(Ys), 2)));
+            double_t meanv = 0;
+            for_range(i, 0, _nrows(Y)){
+                matrix2d_t Yi = _row(Y, i);
+                matrix2d_t Ysi = _row(Ys, i);
+                meanv += _mean_squared_error(Yi, Ysi);
+            }
+            return meanv/_nrows(Y);
+            /*double_t maxv = -1e10;
             for_range(i, 0, _nrows(Y)){
                 matrix2d_t Yi = _row(Y, i);
                 matrix2d_t Ysi = _row(Ys, i);
@@ -728,7 +794,7 @@ namespace SSM::TimeInvariant {
                     maxv = v;
                 }
             }
-            return sqrt(maxv);
+            return (maxv);*/
         }
         
         __inline__ double_t _penalize_roughness(matrix2d_t& X){
@@ -1719,7 +1785,7 @@ namespace SSM::TimeInvariant {
             estimate_P0(true){}
             
         // Assume that any param not null is fixed
-        void init(index_t obs_dim, index_t lat_dim, matrix2d_t& F0=empty_matrix2d, matrix2d_t& H0=empty_matrix2d, matrix2d_t& Q0=empty_matrix2d, matrix2d_t& R0=empty_matrix2d, matrix2d_t& X00=empty_matrix2d, matrix3d_t& P00=empty_matrix3d){
+        void init(index_t obs_dim, index_t lat_dim, matrix2d_t& F0=empty_matrix2d, matrix2d_t& H0=empty_matrix2d, matrix2d_t& Q0=empty_matrix2d, matrix2d_t& R0=empty_matrix2d, matrix2d_t& X00=empty_matrix2d, matrix3d_t& P00=empty_matrix3d, double_t random_spread=0.5){
             //this->params = SSMParameters()
             this->params.F = matrix2d_t(F0);
             //if(!is_none(F0)){
@@ -1741,14 +1807,14 @@ namespace SSM::TimeInvariant {
             //    this->params.lat_dim = lat_dim
             this->params.lat_dim = lat_dim;
             this->params.obs_dim = obs_dim;
-            this->params.random_initialize(is_none(F0), is_none(H0), is_none(Q0), is_none(R0), is_none(X00), is_none(P00));
+            this->params.random_initialize(is_none(F0), is_none(H0), is_none(Q0), is_none(R0), is_none(X00), is_none(P00), random_spread);
             this->best_params = this->params.copy();
         }
 
         void init_with_parameters(index_t obs_dim, const SSMParameters& parameters=empty_ssm_parameters,
             bool est_F=true, bool est_H=true, bool est_Q=true,
             bool est_R=true, bool est_X0=true, bool est_P0=true,
-            index_t lat_dim=-1)
+            index_t lat_dim=-1, double_t random_spread=0.5)
         {
             this->params.obs_dim = obs_dim;
             if(!is_none(parameters)){
@@ -1763,7 +1829,7 @@ namespace SSM::TimeInvariant {
                 this->params.lat_dim = lat_dim;
                 this->params.random_initialize();
             }
-            this->params.random_initialize(est_F, est_H, est_Q, est_R, est_X0, est_P0);
+            this->params.random_initialize(est_F, est_H, est_Q, est_R, est_X0, est_P0, random_spread);
             this->best_params = this->params.copy();
         }
         
@@ -1834,8 +1900,8 @@ namespace SSM::TimeInvariant {
             //!//////print("====>", this->estimate_F, this->estimate_H, this->estimate_Q, this->estimate_R, this->estimate_X0, this->estimate_P0,)
         }
 
-        //def __move_fix(self, best_particle):
-        void move(PSOHeuristicEstimatorParticle& best_particle){
+        /////void move(PSOHeuristicEstimatorParticle& best_particle){
+        void move_fix(PSOHeuristicEstimatorParticle& best_particle){
             //print("==**>", this->estimate_F, this->estimate_H, this->estimate_Q, this->estimate_R, this->estimate_X0, this->estimate_P0,)
             double_t move_to_self_best = 2 * randu();
             double_t move_to_global_best = 2 * randu();
@@ -1847,25 +1913,29 @@ namespace SSM::TimeInvariant {
             }
             if(this->estimate_Q){
                 this->params.Q += move_to_self_best * (this->best_params.Q - this->params.Q) + move_to_global_best * (best_particle.best_params.Q - this->params.Q);
-                this->params.Q = 0.5 * (this->params.Q + _t(this->params.Q));
-                _set_diag_values_positive(this->params.Q);
+                //this->params.Q = 0.5 * (this->params.Q + _t(this->params.Q));
+                //_set_diag_values_positive(this->params.Q);
+                _closest_positive_definite_matrix(this->params.Q);
             }
             if(this->estimate_R){
                 this->params.R += move_to_self_best * (this->best_params.R - this->params.R) + move_to_global_best * (best_particle.best_params.R - this->params.R);
-                this->params.R = 0.5 * (this->params.R + _t(this->params.R));
-                _set_diag_values_positive(this->params.R);
+                //this->params.R = 0.5 * (this->params.R + _t(this->params.R));
+                //_set_diag_values_positive(this->params.R);
+                _closest_positive_definite_matrix(this->params.R);
             }
             if(this->estimate_X0){
                 this->params.X0 += move_to_self_best * (this->best_params.X0 - this->params.X0) + move_to_global_best * (best_particle.best_params.X0 - this->params.X0);
             }
             if(this->estimate_P0){
                 this->params.P0 += move_to_self_best * (this->best_params.P0 - this->params.P0) + move_to_global_best * (best_particle.best_params.P0 - this->params.P0);
-                this->params.P0 = 0.5 * (this->params.P0 + _t(this->params.P0));
-                _set_diag_values_positive(this->params.P0);
+                //this->params.P0 = 0.5 * (this->params.P0 + _t(this->params.P0));
+                //_set_diag_values_positive(this->params.P0);
+                _closest_positive_definite_matrix(this->params.P0);
             }
         }
         
-        void move_flexible(PSOHeuristicEstimatorParticle& best_particle){
+        ////void move_flexible(PSOHeuristicEstimatorParticle& best_particle){
+        void move(PSOHeuristicEstimatorParticle& best_particle){
             //print("==**>", this->estimate_F, this->estimate_H, this->estimate_Q, this->estimate_R, this->estimate_X0, this->estimate_P0,)
             double_t k1 = 2.0;
             double_t k2 = 2.0;
@@ -1877,21 +1947,24 @@ namespace SSM::TimeInvariant {
             }
             if(this->estimate_Q){
                 this->params.Q += k1 * randu() * (this->best_params.Q - this->params.Q) + k2 * randu() * (best_particle.best_params.Q - this->params.Q);
-                this->params.Q = 0.5 * (this->params.Q + _t(this->params.Q));
-                _set_diag_values_positive(this->params.Q);
+                //this->params.Q = 0.5 * (this->params.Q + _t(this->params.Q));
+                //_set_diag_values_positive(this->params.Q);
+                _closest_positive_definite_matrix(this->params.Q);
             }
             if(this->estimate_R){
                 this->params.R += k1 * randu() * (this->best_params.R - this->params.R) + k2 * randu() * (best_particle.best_params.R - this->params.R);
-                this->params.R = 0.5 * (this->params.R + _t(this->params.R));
-                _set_diag_values_positive(this->params.R);
+                //this->params.R = 0.5 * (this->params.R + _t(this->params.R));
+                //_set_diag_values_positive(this->params.R);
+                _closest_positive_definite_matrix(this->params.R);
             }
             if(this->estimate_X0){
                 this->params.X0 += k1 * randu() * (this->best_params.X0 - this->params.X0) + k2 * randu() * (best_particle.best_params.X0 - this->params.X0);
             }
             if(this->estimate_P0){
                 this->params.P0 += k1 * randu() * (this->best_params.P0 - this->params.P0) + k2 * randu() * (best_particle.best_params.P0 - this->params.P0);
-                this->params.P0 = 0.5 * (this->params.P0 + _t(this->params.P0));
-                _set_diag_values_positive(this->params.P0);
+                //this->params.P0 = 0.5 * (this->params.P0 + _t(this->params.P0));
+                //_set_diag_values_positive(this->params.P0);
+                _closest_positive_definite_matrix(this->params.P0);
             }
         }
         
@@ -1970,7 +2043,7 @@ namespace SSM::TimeInvariant {
                            SSMParameters& parameters=empty_ssm_parameters,
                            bool est_F=true, bool est_H=true, bool est_Q=true, 
                            bool est_R=true, bool est_X0=true, bool est_P0=true, 
-                           int_t lat_dim=-1)
+                           int_t lat_dim=-1, double_t random_spread=0.5)
         {
             //!//////print("****==>", this->estimate_F, this->estimate_H, this->estimate_Q, this->estimate_R, this->estimate_X0, this->estimate_P0,)
             //
@@ -2002,9 +2075,9 @@ namespace SSM::TimeInvariant {
             for_range(i, 0, this->population_size){
                 this->particles.push_back(this->_create_particle());
                 if(i == 0){
-                    this->particles[i].init_with_parameters(_nrows(Y), parameters.copy(), false, false, false, false, false, false, parameters.lat_dim);
+                    this->particles[i].init_with_parameters(_nrows(Y), parameters.copy(), false, false, false, false, false, false, parameters.lat_dim, random_spread);
                 }else{
-                    this->particles[i].init_with_parameters(_nrows(Y), parameters.copy(), est_F, est_H, est_Q, est_R, est_X0, est_P0, lat_dim);
+                    this->particles[i].init_with_parameters(_nrows(Y), parameters.copy(), est_F, est_H, est_Q, est_R, est_X0, est_P0, lat_dim, random_spread);
                 }
                 //this->particles{i}.params.show()
                 this->particles[i].set_movable_params(est_F, est_H, est_Q, est_R, est_X0, est_P0);
@@ -2177,7 +2250,8 @@ namespace SSM::TimeInvariant {
             double_t min_improvement=0.01,
             int_t lat_dim=-1,
             index_t sample_size=30,
-            index_t population_size=50, 
+            index_t population_size=50,
+            double_t random_spread=0.5,
             const config_map& penalty_factors=empty_config_map
             )
     {
@@ -2233,7 +2307,7 @@ namespace SSM::TimeInvariant {
         parameters.obs_dim = _nrows(Y);
         parameters.obs_dim = _nrows(Y);
         parameters.random_initialize(is_none(F0), is_none(H0), is_none(Q0), is_none(R0), is_none(X00), is_none(P00));
-        estimator.set_parameters(Y, parameters, contains(estimates, "F"), contains(estimates, "H"), contains(estimates, "Q"), contains(estimates, "R"), contains(estimates, "X0"), contains(estimates, "P0"), -1);
+        estimator.set_parameters(Y, parameters, contains(estimates, "F"), contains(estimates, "H"), contains(estimates, "Q"), contains(estimates, "R"), contains(estimates, "X0"), contains(estimates, "P0"), -1, random_spread);
         estimator.estimate_parameters();
         ks = estimator.smoother();
         ks.smooth();
@@ -2464,6 +2538,7 @@ namespace SSM::TimeInvariant {
             int_t lat_dim=-1,
             index_t sample_size=30,
             index_t population_size=50, 
+            double_t random_spread=0.5,
             const config_map& penalty_factors=empty_config_map
             )
     {
@@ -2519,7 +2594,7 @@ namespace SSM::TimeInvariant {
         parameters.obs_dim = _nrows(Y);
         parameters.obs_dim = _nrows(Y);
         parameters.random_initialize(is_none(F0), is_none(H0), is_none(Q0), is_none(R0), is_none(X00), is_none(P00));
-        estimator.set_parameters(Y, parameters, contains(estimates, "F"), contains(estimates, "H"), contains(estimates, "Q"), contains(estimates, "R"), contains(estimates, "X0"), contains(estimates, "P0"), -1);
+        estimator.set_parameters(Y, parameters, contains(estimates, "F"), contains(estimates, "H"), contains(estimates, "Q"), contains(estimates, "R"), contains(estimates, "X0"), contains(estimates, "P0"), -1, random_spread);
         estimator.estimate_parameters();
         ks = estimator.smoother();
         ks.smooth();
@@ -2700,6 +2775,7 @@ namespace SSM::TimeInvariant {
             int_t lat_dim=-1,
             index_t sample_size=30,
             index_t population_size=50, 
+            double_t random_spread=0.5,
             const config_map& penalty_factors=empty_config_map
             )
     {
@@ -2755,7 +2831,7 @@ namespace SSM::TimeInvariant {
         parameters.obs_dim = _nrows(Y);
         parameters.obs_dim = _nrows(Y);
         parameters.random_initialize(is_none(F0), is_none(H0), is_none(Q0), is_none(R0), is_none(X00), is_none(P00));
-        estimator.set_parameters(Y, parameters, contains(estimates, "F"), contains(estimates, "H"), contains(estimates, "Q"), contains(estimates, "R"), contains(estimates, "X0"), contains(estimates, "P0"), -1);
+        estimator.set_parameters(Y, parameters, contains(estimates, "F"), contains(estimates, "H"), contains(estimates, "Q"), contains(estimates, "R"), contains(estimates, "X0"), contains(estimates, "P0"), -1, random_spread);
         estimator.estimate_parameters();
         ks = estimator.smoother();
         ks.smooth();
@@ -3153,7 +3229,8 @@ namespace SSM::TimeInvariant {
             double_t penalty_inestable_system=10,
             double_t penalty_mse=1e-5,
             double_t penalty_roughness_X=0.5,
-            double_t penalty_roughness_Y=0.5)
+            double_t penalty_roughness_Y=0.5,
+            double_t random_spread=0.5)
     {
         matrix2d_t* _Y = c_create_matrix2d_from(Y, obs_dim, T);
         matrix2d_t* _F = c_create_matrix2d_from(F, lat_dim, lat_dim);
@@ -3220,7 +3297,7 @@ namespace SSM::TimeInvariant {
         estimator.set_parameters(*_Y, parameters,
                 contains(estimates, "F"), contains(estimates, "H"), 
                 contains(estimates, "Q"), contains(estimates, "R"), 
-                contains(estimates, "X0"), contains(estimates, "P0"), -1);
+                contains(estimates, "X0"), contains(estimates, "P0"), -1, random_spread);
         estimator.estimate_parameters();
         KalmanSmoother* ks = c_new_kalman_smoother();
         *ks = estimator.smoother();
@@ -3261,7 +3338,8 @@ namespace SSM::TimeInvariant {
             double_t penalty_inestable_system=10,
             double_t penalty_mse=1e-5,
             double_t penalty_roughness_X=0.5,
-            double_t penalty_roughness_Y=0.5)
+            double_t penalty_roughness_Y=0.5,
+            double_t random_spread=0.5)
     {
         return _estimate_using_x_pso<PurePSOHeuristicEstimator>(
             estimates,
@@ -3277,7 +3355,8 @@ namespace SSM::TimeInvariant {
             penalty_inestable_system,
             penalty_mse,
             penalty_roughness_X,
-            penalty_roughness_Y);
+            penalty_roughness_Y,
+            random_spread);
     }
 
     // {{export-c}}
@@ -3301,7 +3380,8 @@ namespace SSM::TimeInvariant {
             double_t penalty_inestable_system=10,
             double_t penalty_mse=1e-5,
             double_t penalty_roughness_X=0.5,
-            double_t penalty_roughness_Y=0.5)
+            double_t penalty_roughness_Y=0.5,
+            double_t random_spread=0.5)
     {
         return _estimate_using_x_pso<LSEHeuristicEstimator>(
             estimates,
@@ -3317,7 +3397,8 @@ namespace SSM::TimeInvariant {
             penalty_inestable_system,
             penalty_mse,
             penalty_roughness_X,
-            penalty_roughness_Y);
+            penalty_roughness_Y,
+            random_spread);
     }
 
     // {{export-c}}
@@ -3341,7 +3422,8 @@ namespace SSM::TimeInvariant {
             double_t penalty_inestable_system=10,
             double_t penalty_mse=1e-5,
             double_t penalty_roughness_X=0.5,
-            double_t penalty_roughness_Y=0.5)
+            double_t penalty_roughness_Y=0.5,
+            double_t random_spread=0.5)
     {
         return _estimate_using_x_pso<EMHeuristicEstimator>(
             estimates,
@@ -3357,7 +3439,8 @@ namespace SSM::TimeInvariant {
             penalty_inestable_system,
             penalty_mse,
             penalty_roughness_X,
-            penalty_roughness_Y);
+            penalty_roughness_Y,
+            random_spread);
     }
 
     // {{export-c}}
@@ -3443,7 +3526,8 @@ namespace SSM::TimeInvariant {
             double_t penalty_inestable_system=10,
             double_t penalty_mse=1e-5,
             double_t penalty_roughness_X=0.5,
-            double_t penalty_roughness_Y=0.5)
+            double_t penalty_roughness_Y=0.5,
+            double_t random_spread=0.5)
     {
         string _type_of_estimator = type_of_estimator;
         _type_of_estimator = to_upper(_type_of_estimator);
@@ -3469,7 +3553,8 @@ namespace SSM::TimeInvariant {
                 penalty_inestable_system,
                 penalty_mse,
                 penalty_roughness_X,
-                penalty_roughness_Y);
+                penalty_roughness_Y,
+                random_spread);
         }else if(_type_of_estimator == "LSE+PSO"){
             return _estimate_using_x_pso<LSEHeuristicEstimator>(
                 estimates,
@@ -3485,7 +3570,8 @@ namespace SSM::TimeInvariant {
                 penalty_inestable_system,
                 penalty_mse,
                 penalty_roughness_X,
-                penalty_roughness_Y);
+                penalty_roughness_Y,
+                random_spread);
         }else if(_type_of_estimator == "EM+PSO"){
             return _estimate_using_x_pso<EMHeuristicEstimator>(
                 estimates,
@@ -3501,7 +3587,8 @@ namespace SSM::TimeInvariant {
                 penalty_inestable_system,
                 penalty_mse,
                 penalty_roughness_X,
-                penalty_roughness_Y);
+                penalty_roughness_Y,
+                random_spread);
         }else{
             throw logic_error("Type of estimator not found!");
         }

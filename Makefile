@@ -14,8 +14,8 @@ INCLUDE         := include
 LIB             := lib
 
 LIBRARIES        := -march=native -O3 -ftree-vectorize 
-#LIBRARIES        := -O0
 LIBRARIES        += -DARMA_DONT_USE_WRAPPER -DARMA_USE_BLAS -DARMA_USE_LAPACK -DARMA_USE_HDF5
+LIBRARIES        += -DARMA_NO_DEBUG
 LIBRARIES        += -DNDEBUG
 LIBRARIES        += -lopenblas -llapack -lhdf5 -lfftw3
 LIBRARIES        += -I"d:\ProgramData\Anaconda3\include" -I"d:\ProgramData\Anaconda3\Lib\site-packages\numpy\core\include" -L"d:\ProgramData\Anaconda3\Lib"  -L"d:\ProgramData\Anaconda3\libs" -lpython36 

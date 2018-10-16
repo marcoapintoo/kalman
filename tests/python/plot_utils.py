@@ -100,7 +100,7 @@ def plot_smoother_signals(smoothers):
     plt.show()
 
 
-def plot_error_density(inErrs, outErrs, title="Errors"):
+def plot_error_density_classic(inErrs, outErrs, title="Errors"):
     #sns.set_style("deep")
     plt.style.use("seaborn-deep")
     plt.figure(figsize=(10, 10))
@@ -150,6 +150,97 @@ def plot_error_density(inErrs, outErrs, title="Errors"):
     )
     #axHisty.axvline(x=)
     qntts, bins = np.histogram(inErrs, bins=100)
+    tentative_modes_x = (bins[:-1] + 0.5 * (bins[1] - bins[0]))[qntts > 10 * qntts.mean()]
+    for x0 in tentative_modes_x:
+        axHistx.axvline(x=x0, color="darkblue")
+        axHistx.text(
+            x0 + 0.01 * (axHistx.get_xlim()[1] - axHistx.get_xlim()[0]), 
+        0.45 * (axHistx.get_ylim()[1] - axHistx.get_ylim()[0]), 
+            "Mode: {0:.2g}".format(y0),
+            color="darkblue"
+        )
+    x0 = inErrs.mean()
+    axHistx.axvline(x=x0, color="darkred")
+    axHistx.text(
+        x0 + 0.01 * (axHistx.get_xlim()[1] - axHistx.get_xlim()[0]), 
+        0.45 * (axHistx.get_ylim()[1] - axHistx.get_ylim()[0]), 
+        "Mean: {0:.2g}".format(x0),
+        color="darkred"
+    )
+
+    axScatter.set_xlim(axHistx.get_xlim())
+    axScatter.set_ylim(axHisty.get_ylim())
+    
+    #axHistx.set_ylabel("")
+    axScatter.set_ylabel("MSE of input parameter")
+    
+    #axHisty.set_xlabel("")
+    axScatter.set_xlabel("MSE of output parameter")
+    
+    axHistx.set_title(" "* 40 + title)
+    #plt.suptitle(title)
+
+
+def plot_error_density(inErrs, outErrs, title="Errors"):
+    #sns.set_style("deep")
+    plt.style.use("seaborn-deep")
+    plt.figure(figsize=(10, 10))
+    left, width = 0.1, 0.65
+    bottom, height = 0.1, 0.65
+    bottom_h = left_h = left + width + 0.02
+
+    rect_scatter = [left, bottom, width, height]
+    rect_histx = [left, bottom_h, width, 0.2]
+    rect_histy = [left_h, bottom, 0.2, height]
+
+    
+    axScatter = plt.axes(rect_scatter)
+    axHistx = plt.axes(rect_histx)
+    axHisty = plt.axes(rect_histy)
+
+    # no labels
+    axHistx.set_xticks([])
+    axHisty.set_yticks([])
+
+    # the scatter plot:
+    #axScatter.scatter(x, y)
+    axScatter.plot(inErrs, outErrs, "o")
+
+    # now determine nice limits by hand:
+    #axScatter.set_xlim(xlim)
+    #axScatter.set_ylim(ylim)
+
+    #sns.kdeplot(inErrs, bw="scott", kernel="triw", shade=True, ax=axHistx)
+    #sns.kdeplot(outErrs, bw='scott', kernel="triw", shade=True, ax=axHisty, vertical=True)
+    sns.distplot(inErrs, bins=100, kde_kws=dict(bw="scott", kernel="triw", shade=True), ax=axHistx)
+    sns.distplot(outErrs, bins=100, kde_kws=dict(bw='scott', kernel="triw", shade=True), ax=axHisty, vertical=True)
+
+    qntts, bins = np.histogram(outErrs, bins=100)
+    #plt.hist(outErrs, bins=100, orientation='vertical')
+    #bins_x = bins[:-1] + 0.5 * (bins[1] - bins[0])
+    #axHisty.plot(bins_x, qntts, "-")
+    #axHisty.fill_between(bins_x, 0, qntts, alpha=0.5)
+    tentative_modes_y = (bins[:-1] + 0.5 * (bins[1] - bins[0]))[qntts > 10 * qntts.mean()]
+    for y0 in tentative_modes_y:
+        axHisty.axhline(y=y0, color="darkblue")
+        axHisty.text(
+            0, y0 + (bins[1]-bins[0])*0.9,
+            "Mode: {0:.2g}".format(y0),
+            color="darkblue"
+        )
+    y0 = outErrs.mean()
+    axHisty.axhline(y=y0, color="darkred")
+    axHisty.text(
+        0, y0 + (bins[1]-bins[0])*0.9,
+        "Mean: {0:.2g}".format(y0),
+        color="darkred"
+    )
+    #axHisty.axvline(x=)
+    qntts, bins = np.histogram(inErrs, bins=100)
+    #plt.hist(inErrs, bins=100, orientation='horizontal')
+    #bins_x = bins[:-1] + 0.5 * (bins[1] - bins[0])
+    #axHistx.plot(qntts, bins_x, "-")
+    #axHistx.fill_between(bins_x, 0, qntts, alpha=0.5)
     tentative_modes_x = (bins[:-1] + 0.5 * (bins[1] - bins[0]))[qntts > 10 * qntts.mean()]
     for x0 in tentative_modes_x:
         axHistx.axvline(x=x0, color="darkblue")
@@ -270,7 +361,7 @@ def plot_error_confidence_interval2(inErrs, outErrs, title="Estimation error of 
     
     # regroup series
     xinterval = np.sort(np.unique(inErrs))
-    delta_xinterval = xinterval[1] - xinterval[0]
+    #delta_xinterval = xinterval[1] - xinterval[0]
     yinterval = []
     for i, x0 in enumerate(xinterval):
         yinterval.append(outErrs[inErrs == x0])

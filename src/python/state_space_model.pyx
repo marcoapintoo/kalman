@@ -108,7 +108,8 @@ cdef extern from "SSM/StateSpaceModels" namespace "SSM::TimeInvariant":
             double_t penalty_inestable_system,
             double_t penalty_mse,
             double_t penalty_roughness_X,
-            double_t penalty_roughness_Y)
+            double_t penalty_roughness_Y,
+            double_t random_spread)
     #
     cdef void* _estimate_using_lse_pso(
             const char* estimates,
@@ -130,7 +131,8 @@ cdef extern from "SSM/StateSpaceModels" namespace "SSM::TimeInvariant":
             double_t penalty_inestable_system,
             double_t penalty_mse,
             double_t penalty_roughness_X,
-            double_t penalty_roughness_Y)
+            double_t penalty_roughness_Y,
+            double_t random_spread)
     #
     cdef void* _estimate_using_em_pso(
             const char* estimates,
@@ -152,7 +154,8 @@ cdef extern from "SSM/StateSpaceModels" namespace "SSM::TimeInvariant":
             double_t penalty_inestable_system,
             double_t penalty_mse,
             double_t penalty_roughness_X,
-            double_t penalty_roughness_Y)
+            double_t penalty_roughness_Y,
+            double_t random_spread)
     #
     cdef void* _estimate_ssm(
             const char* type_of_estimator,
@@ -175,7 +178,24 @@ cdef extern from "SSM/StateSpaceModels" namespace "SSM::TimeInvariant":
             double_t penalty_inestable_system,
             double_t penalty_mse,
             double_t penalty_roughness_X,
-            double_t penalty_roughness_Y)
+            double_t penalty_roughness_Y,
+            double_t random_spread) except +RuntimeError
+    #
+    cdef void _performance_of_parameters(
+                double_t* loglikelihood, 
+                double_t* low_std_to_mean_penalty, 
+                double_t* low_variance_Q_penalty, 
+                double_t* low_variance_R_penalty, 
+                double_t* low_variance_P0_penalty, 
+                double_t* system_inestability_penalty, 
+                double_t* mean_squared_error_penalty, 
+                double_t* roughness_X_penalty, 
+                double_t* roughness_Y_penalty, 
+                index_t obs_dim, index_t lat_dim, index_t T,
+                double_t* Y,
+                double_t* F, double_t* H, 
+                double_t* Q, double_t* R, 
+                double_t* X0, double_t* P0) except +RuntimeError
     #
 
 import numpy as np
@@ -216,56 +236,7 @@ cdef index_t* tovector1_i(index_t[:] X):
     return <index_t*>&X[0]
 
 
-cpdef estimate(str type_of_estimator,
-    str estimates,
-    np.ndarray Y,
-    index_t obs_dim=-1,
-    index_t lat_dim=-1,
-    index_t T=-1,
-    np.ndarray F=None, np.ndarray H=None, 
-    np.ndarray Q=None, np.ndarray R=None, 
-    np.ndarray X0=None, np.ndarray P0=None,
-    index_t min_iterations=1,
-    index_t max_iterations=20, 
-    double_t min_improvement=0.01,
-    index_t sample_size=30,
-    index_t population_size=50,
-    double_t penalty_low_variance_Q=0.5,
-    double_t penalty_low_variance_R=0.5,
-    double_t penalty_low_variance_P0=0.5,
-    double_t penalty_low_std_mean_ratio=0.5,
-    double_t penalty_inestable_system=10.0,
-    double_t penalty_mse=1e-5,
-    double_t penalty_roughness_X=0.5,
-    double_t penalty_roughness_Y=0.5,
-    int max_length_loglikelihood=1000,
-    bool return_details=False):
-    return estimate_ssm(
-        type_of_estimator, estimates, np.array(Y, dtype="f8"),
-        obs_dim, lat_dim, T,
-        np.array(F, dtype="f8"),
-        np.array(H, dtype="f8"),
-        np.array(Q, dtype="f8"),
-        np.array(R, dtype="f8"),
-        np.array(X0, dtype="f8"),
-        np.array(P0, dtype="f8"),
-        min_iterations,
-        max_iterations, 
-        min_improvement,
-        sample_size,
-        population_size,
-        penalty_low_variance_Q,
-        penalty_low_variance_R,
-        penalty_low_variance_P0,
-        penalty_low_std_mean_ratio,
-        penalty_inestable_system,
-        penalty_mse,
-        penalty_roughness_X,
-        penalty_roughness_Y,
-        max_length_loglikelihood,
-        return_details)
-
-cpdef estimate_ssm(str type_of_estimator,
+cdef _estimate_ssm_p(str type_of_estimator,
     str estimates,
     matrix2d_t Y,
     index_t obs_dim=-1,
@@ -287,8 +258,10 @@ cpdef estimate_ssm(str type_of_estimator,
     double_t penalty_mse=1e-5,
     double_t penalty_roughness_X=0.5,
     double_t penalty_roughness_Y=0.5,
+    double_t random_spread=0.5,
     int max_length_loglikelihood=1000,
     bool return_details=False):
+
     type_of_estimator1 = type_of_estimator.encode('UTF-8')
     estimates1 = estimates.encode('UTF-8')
     cdef const char* _type_of_estimator = type_of_estimator1
@@ -338,7 +311,8 @@ cpdef estimate_ssm(str type_of_estimator,
             penalty_inestable_system,
             penalty_mse,
             penalty_roughness_X,
-            penalty_roughness_Y)
+            penalty_roughness_Y,
+            random_spread)
     
     
     _kalman_smoother_results(
@@ -364,3 +338,114 @@ cpdef estimate_ssm(str type_of_estimator,
             np.array(loglikelihood_record)
         )
     return (np.array(Xs), np.array(Ys))
+
+cpdef estimate(str type_of_estimator,
+    str estimates,
+    np.ndarray Y,
+    index_t obs_dim=-1,
+    index_t lat_dim=-1,
+    index_t T=-1,
+    np.ndarray F=None, np.ndarray H=None, 
+    np.ndarray Q=None, np.ndarray R=None, 
+    np.ndarray X0=None, np.ndarray P0=None,
+    index_t min_iterations=1,
+    index_t max_iterations=20, 
+    double_t min_improvement=0.01,
+    index_t sample_size=30,
+    index_t population_size=50,
+    double_t penalty_low_variance_Q=0.5,
+    double_t penalty_low_variance_R=0.5,
+    double_t penalty_low_variance_P0=0.5,
+    double_t penalty_low_std_mean_ratio=0.5,
+    double_t penalty_inestable_system=10.0,
+    double_t penalty_mse=1e-5,
+    double_t penalty_roughness_X=0.5,
+    double_t penalty_roughness_Y=0.5,
+    double_t random_spread=0.5,
+    int max_length_loglikelihood=1000,
+    bool return_details=False):
+    F = F if F is not None else np.ones((lat_dim, lat_dim))
+    H = H if H is not None else np.ones((obs_dim, lat_dim))
+    Q = Q if Q is not None else 0.1 * np.eye(lat_dim, lat_dim)
+    R = R if R is not None else 0.1 * np.eye(obs_dim, obs_dim)
+    X0 = X0 if X0 is not None else np.ones((lat_dim, 1))
+    P0 = P0 if P0 is not None else 0.1 * np.eye(lat_dim, lat_dim)
+    return _estimate_ssm_p(
+        type_of_estimator, estimates, np.array(Y, dtype="f8"),
+        obs_dim, lat_dim, T,
+        np.array(F, dtype="f8"),
+        np.array(H, dtype="f8"),
+        np.array(Q, dtype="f8"),
+        np.array(R, dtype="f8"),
+        np.array(X0, dtype="f8"),
+        np.array(P0, dtype="f8"),
+        min_iterations,
+        max_iterations, 
+        min_improvement,
+        sample_size,
+        population_size,
+        penalty_low_variance_Q,
+        penalty_low_variance_R,
+        penalty_low_variance_P0,
+        penalty_low_std_mean_ratio,
+        penalty_inestable_system,
+        penalty_mse,
+        penalty_roughness_X,
+        penalty_roughness_Y,
+        random_spread,
+        max_length_loglikelihood,
+        return_details)
+
+
+cpdef tuple performance_of_parameters(
+                        np.ndarray Y,
+                        index_t obs_dim,
+                        index_t lat_dim,
+                        index_t T,
+                        np.ndarray F, np.ndarray H,
+                        np.ndarray Q, np.ndarray R,
+                        np.ndarray X0, np.ndarray P0
+):
+    cdef str dtype = "f8"
+    cdef matrix2d_t _Y = np.array(Y, dtype=dtype)
+    cdef matrix2d_t _F = np.array(F, dtype=dtype)
+    cdef matrix2d_t _H = np.array(H, dtype=dtype)
+    cdef matrix2d_t _Q = np.array(Q, dtype=dtype)
+    cdef matrix2d_t _R = np.array(R, dtype=dtype)
+    cdef matrix2d_t _X0 = np.array(X0, dtype=dtype)
+    cdef matrix2d_t _P0 = np.array(P0, dtype=dtype)
+    cdef matrix1d_t loglikelihood = np.zeros(1, dtype=dtype)
+    cdef matrix1d_t low_std_to_mean_penalty = np.zeros(1, dtype=dtype)
+    cdef matrix1d_t low_variance_Q_penalty = np.zeros(1, dtype=dtype)
+    cdef matrix1d_t low_variance_R_penalty = np.zeros(1, dtype=dtype)
+    cdef matrix1d_t low_variance_P0_penalty = np.zeros(1, dtype=dtype)
+    cdef matrix1d_t system_inestability_penalty = np.zeros(1, dtype=dtype)
+    cdef matrix1d_t mean_squared_error_penalty = np.zeros(1, dtype=dtype)
+    cdef matrix1d_t roughness_X_penalty = np.zeros(1, dtype=dtype)
+    cdef matrix1d_t roughness_Y_penalty = np.zeros(1, dtype=dtype)
+    _performance_of_parameters(
+                tovector1(loglikelihood), 
+                tovector1(low_std_to_mean_penalty), 
+                tovector1(low_variance_Q_penalty), 
+                tovector1(low_variance_R_penalty), 
+                tovector1(low_variance_P0_penalty), 
+                tovector1(system_inestability_penalty), 
+                tovector1(mean_squared_error_penalty), 
+                tovector1(roughness_X_penalty), 
+                tovector1(roughness_Y_penalty), 
+                obs_dim, lat_dim, T,
+                tovector2(_Y),
+                tovector2(_F), tovector2(_H), 
+                tovector2(_Q), tovector2(_R), 
+                tovector2(_X0), tovector2(_P0) )
+    return (
+        loglikelihood[0], 
+        low_std_to_mean_penalty[0], 
+        low_variance_Q_penalty[0], 
+        low_variance_R_penalty[0], 
+        low_variance_P0_penalty[0], 
+        system_inestability_penalty[0], 
+        mean_squared_error_penalty[0], 
+        roughness_X_penalty[0], 
+        roughness_Y_penalty[0]
+    )
