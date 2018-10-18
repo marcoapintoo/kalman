@@ -762,6 +762,26 @@ namespace SSM::TimeInvariant {
             eig_gen(eigval, X);
             return sum(pow(abs(vectorise(eigval)), 2));
         }
+        
+        __inline__ double_t _penalize_inestable_system_alt(matrix2d_t& X){
+            /*
+            penalty
+            => we will give preference to systems "almost-stable"
+            that means that their eigenvalues must be almost equal to 1.
+            eigenvalues of X    penalty
+            1                   ~ 0
+            0.9                 ~ 1
+            1.1                 ~ 10
+            */
+            cx_vec eigval;
+            eig_gen(eigval, X);
+            matrix1d_t values = abs(vectorise(eigval));
+            return accu(abs(pow(values, 200) - 1));
+            //matrix1d_t values = 1 - abs(vectorise(eigval));
+            //return accu(pow((1 + values) * (values > 0), 2)) + accu(pow(values * (values < 0), 2));
+            //return accu(pow(values, 2));
+            //return sum(pow(values * (values > 0), 2)) + abs(sum(pow(values * (values < 0), 3)));
+        }
 
         __inline__ double_t _mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
             //coefficient of determination
@@ -1861,18 +1881,29 @@ namespace SSM::TimeInvariant {
             double_t mean_squared_error_penalty;
             double_t roughness_X_penalty;
             double_t roughness_Y_penalty;
-            this->params.performance_parameters(
-                loglikelihood,
-                low_std_to_mean_penalty,
-                low_variance_Q_penalty,
-                low_variance_R_penalty,
-                low_variance_P0_penalty,
-                system_inestability_penalty,
-                mean_squared_error_penalty,
-                roughness_X_penalty,
-                roughness_Y_penalty,
-                Y);
-            
+            try{
+                this->params.performance_parameters(
+                    loglikelihood,
+                    low_std_to_mean_penalty,
+                    low_variance_Q_penalty,
+                    low_variance_R_penalty,
+                    low_variance_P0_penalty,
+                    system_inestability_penalty,
+                    mean_squared_error_penalty,
+                    roughness_X_penalty,
+                    roughness_Y_penalty,
+                    Y);
+            }catch(std::logic_error e){
+                loglikelihood = -1e100;
+                low_std_to_mean_penalty = 0;
+                low_variance_Q_penalty = 0;
+                low_variance_R_penalty = 0;
+                low_variance_P0_penalty = 0;
+                system_inestability_penalty = 0;
+                mean_squared_error_penalty = 0;
+                roughness_X_penalty = 0;
+                roughness_Y_penalty = 0;
+            }
             this->loglikelihood = loglikelihood;
             this->metric = loglikelihood;
             this->metric -= this->penalty_factor_low_std_mean_ratio * low_std_to_mean_penalty;
@@ -3267,24 +3298,24 @@ namespace SSM::TimeInvariant {
         estimator.penalty_factor_roughness_Y = penalty_roughness_Y;
         
         SSMParameters parameters;
-        parameters.F = *_F;
+        parameters.F = *_F;//matrix2d_t(*_F);
         if(F != nullptr){
             parameters.lat_dim = _nrows(*_F);
         }
-        parameters.H = *_H;
+        parameters.H = *_H;//matrix2d_t(*_H);
         if(H != nullptr){
             parameters.lat_dim = _ncols(*_H);
         }
-        parameters.Q = *_Q;
+        parameters.Q = *_Q;//matrix2d_t(*_Q);
         if(Q != nullptr){
             parameters.lat_dim = _ncols(*_Q);
         }
-        parameters.R = *_R;
-        parameters.X0 = *_X0;
+        parameters.R = *_R;//matrix2d_t(*_R);
+        parameters.X0 = *_X0;//matrix2d_t(*_X0);
         if(X0 != nullptr){
             parameters.lat_dim = _nrows(*_X0);
         }
-        parameters.P0 = *_P0;
+        parameters.P0 = *_P0;//matrix2d_t(*_P0);
         if(P0 != nullptr){
             parameters.lat_dim = _ncols(*_P0);
         }
