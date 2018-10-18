@@ -758,9 +758,9 @@ namespace SSM::TimeInvariant {
             0.1 0.1 0.1         ~ 0.08
             0.5 0.9 0.5         ~ 8
             */
-            matrix1d_t eigval;
-            eig_sym(eigval, X);
-            return sum(pow(abs(eigval), 2));
+            cx_vec eigval;
+            eig_gen(eigval, X);
+            return sum(pow(abs(vectorise(eigval)), 2));
         }
 
         __inline__ double_t _mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
