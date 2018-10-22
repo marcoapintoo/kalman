@@ -571,6 +571,19 @@ namespace SSM::TimeInvariant {
         ASSERT(_mean_squared_error(Y, Ypred) == 3.0, "");
     }
 
+    double_t _smoothed_mean_squared_error(matrix2d_t& Y, matrix2d_t& Ypred, index_t smoothed_distance){
+        matrix1d_t Y1 = vectorise(Y);
+        matrix1d_t Y2 = vectorise(Ypred);
+        double_t diff = 0;
+        index_t T = 0;
+        for(index_t i = 0; i < _nrows(Y1); i+=smoothed_distance){
+            index_t i1 = min(_nrows(Y1), i + smoothed_distance);
+            double_t d = mean(Y1.rows(i, i1)) - mean(Y2.rows(i, i1));
+            diff += d * d;
+            T++;
+        }
+        return diff / T;
+    }
 
     ///////////////////////////////////////////////////////////////////////////
     ///  Invariant State-Space Models
@@ -795,7 +808,7 @@ namespace SSM::TimeInvariant {
             );*/
         }
 
-        __inline__ double_t _penalize_mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
+        __inline__ double_t _penalize_mean_squared_error_old(matrix2d_t& Y, matrix2d_t& Ys){
             //return accu(pow(vectorise(Y) - vectorise(Ys), 2)) / (_nrows(Y) + _ncols(Y) + 1);
             //return accu(pow(vectorise(Y) - vectorise(Ys), 2)) / (accu(pow(vectorise(Y), 2)) * accu(pow(vectorise(Ys), 2)));
             double_t meanv = 0;
@@ -815,6 +828,18 @@ namespace SSM::TimeInvariant {
                 }
             }
             return (maxv);*/
+        }
+
+        __inline__ double_t _penalize_mean_squared_error(matrix2d_t& Y, matrix2d_t& Ys){
+            return mean(pow(vectorise(Y) - vectorise(Ys), 2));
+            /*
+            double_t vmean = 0;
+            for_range(r, 0, _nrows(Y)){
+                for_range(c, 0, _ncols(Y)){
+                    vmean += (Y(r, c) - Ys(r, c)) * (Y(r, c) - Ys(r, c));
+                }
+            }
+            return vmean;*/
         }
         
         __inline__ double_t _penalize_roughness(matrix2d_t& X){
@@ -1893,7 +1918,8 @@ namespace SSM::TimeInvariant {
                     roughness_X_penalty,
                     roughness_Y_penalty,
                     Y);
-            }catch(std::logic_error e){
+            //}catch(std::logic_error e){
+            }catch(...){
                 loglikelihood = -1e100;
                 low_std_to_mean_penalty = 0;
                 low_variance_Q_penalty = 0;
@@ -3510,6 +3536,7 @@ namespace SSM::TimeInvariant {
         parameters.obs_dim = obs_dim;
         //
         KalmanSmoother smoother = kalman_smoother_from_parameters(*_Y, parameters);
+        
         *loglikelihood = smoother.loglikelihood();
         *low_std_to_mean_penalty = parameters._penalize_low_std_to_mean_ratio(smoother.X0(), smoother.P0());
         *low_variance_Q_penalty = parameters._penalize_low_variance(smoother.Q());

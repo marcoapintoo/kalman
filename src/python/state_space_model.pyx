@@ -364,21 +364,22 @@ cpdef estimate(str type_of_estimator,
     double_t random_spread=0.5,
     int max_length_loglikelihood=1000,
     bool return_details=False):
-    F = F if F is not None else np.ones((lat_dim, lat_dim))
-    H = H if H is not None else np.ones((obs_dim, lat_dim))
-    Q = Q if Q is not None else 0.1 * np.eye(lat_dim, lat_dim)
-    R = R if R is not None else 0.1 * np.eye(obs_dim, obs_dim)
-    X0 = X0 if X0 is not None else np.ones((lat_dim, 1))
-    P0 = P0 if P0 is not None else 0.1 * np.eye(lat_dim, lat_dim)
+    Y = np.ascontiguousarray(Y).astype("f8").copy()
+    F = np.ascontiguousarray(F).astype("f8").copy() if F is not None else np.ones((lat_dim, lat_dim))
+    H = np.ascontiguousarray(H).astype("f8").copy() if H is not None else np.ones((obs_dim, lat_dim))
+    Q = np.ascontiguousarray(Q).astype("f8").copy() if Q is not None else 0.1 * np.eye(lat_dim, lat_dim)
+    R = np.ascontiguousarray(R).astype("f8").copy() if R is not None else 0.1 * np.eye(obs_dim, obs_dim)
+    X0 = np.ascontiguousarray(X0).astype("f8").copy() if X0 is not None else np.ones((lat_dim, 1))
+    P0 = np.ascontiguousarray(P0).astype("f8").copy() if P0 is not None else 0.1 * np.eye(lat_dim, lat_dim)
     return _estimate_ssm_p(
-        type_of_estimator, estimates, np.array(Y, dtype="f8"),
+        type_of_estimator, estimates, Y,
         obs_dim, lat_dim, T,
-        np.array(F, dtype="f8"),
-        np.array(H, dtype="f8"),
-        np.array(Q, dtype="f8"),
-        np.array(R, dtype="f8"),
-        np.array(X0, dtype="f8"),
-        np.array(P0, dtype="f8"),
+        F,
+        H,
+        Q,
+        R,
+        X0,
+        P0,
         min_iterations,
         max_iterations, 
         min_improvement,
@@ -407,13 +408,13 @@ cpdef tuple performance_of_parameters(
                         np.ndarray X0, np.ndarray P0
 ):
     cdef str dtype = "f8"
-    cdef matrix2d_t _Y = np.array(Y, dtype=dtype)
-    cdef matrix2d_t _F = np.array(F, dtype=dtype)
-    cdef matrix2d_t _H = np.array(H, dtype=dtype)
-    cdef matrix2d_t _Q = np.array(Q, dtype=dtype)
-    cdef matrix2d_t _R = np.array(R, dtype=dtype)
-    cdef matrix2d_t _X0 = np.array(X0, dtype=dtype)
-    cdef matrix2d_t _P0 = np.array(P0, dtype=dtype)
+    cdef matrix2d_t _Y = np.ascontiguousarray(np.array(Y, dtype=dtype)).copy() #Fix np issue with C-type arrays
+    cdef matrix2d_t _F = np.ascontiguousarray(np.array(F, dtype=dtype)).copy()
+    cdef matrix2d_t _H = np.ascontiguousarray(np.array(H, dtype=dtype)).copy()
+    cdef matrix2d_t _Q = np.ascontiguousarray(np.array(Q, dtype=dtype)).copy()
+    cdef matrix2d_t _R = np.ascontiguousarray(np.array(R, dtype=dtype)).copy()
+    cdef matrix2d_t _X0 = np.ascontiguousarray(np.array(X0, dtype=dtype)).copy()
+    cdef matrix2d_t _P0 = np.ascontiguousarray(np.array(P0, dtype=dtype)).copy()
     cdef matrix1d_t loglikelihood = np.zeros(1, dtype=dtype)
     cdef matrix1d_t low_std_to_mean_penalty = np.zeros(1, dtype=dtype)
     cdef matrix1d_t low_variance_Q_penalty = np.zeros(1, dtype=dtype)
