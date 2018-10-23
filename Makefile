@@ -16,7 +16,7 @@ LIB             := lib
 LIBRARIES        := -march=native -O3 -ftree-vectorize 
 LIBRARIES        += -DARMA_DONT_USE_WRAPPER -DARMA_USE_BLAS -DARMA_USE_LAPACK -DARMA_USE_HDF5
 LIBRARIES        += -DARMA_NO_DEBUG
-LIBRARIES        += -DNDEBUG
+#LIBRARIES        += -DNDEBUG
 LIBRARIES        += -lopenblas -llapack -lhdf5 -lfftw3
 LIBRARIES        += -I"d:\ProgramData\Anaconda3\include" -I"d:\ProgramData\Anaconda3\Lib\site-packages\numpy\core\include" -L"d:\ProgramData\Anaconda3\Lib"  -L"d:\ProgramData\Anaconda3\libs" -lpython36 
 
@@ -36,7 +36,7 @@ CYTHON_CPP_FILES := $(patsubst $(PYSRC)/%.pyx,$(PYSRCOUT)/%.cpp,$(CYTHON_PYX_FIL
 
 .PHONY: all
 
-all: clean $(BIN)/$(PYMODULE)# $(BIN)/$(EXECUTABLE)
+all: clean $(BIN)/$(PYMODULE) $(BIN)/$(EXECUTABLE)
 #all: clean $(BIN)/$(EXECUTABLE)
 
 pytest:
@@ -52,7 +52,7 @@ $(BIN)/$(EXECUTABLE): $(SRC)/*.cpp
 	$(CXX) $(CXX_FLAGS) -I$(INCLUDE) -L$(LIB) $^ -o $@ $(LIBRARIES)
 
 $(BIN)/$(PYMODULE): $(CYTHON_CPP_FILES)
-	$(CXX) $(CXX_FLAGS) -I$(INCLUDE) -L$(LIB) -fPIC $^ -shared -o $@ $(LIBRARIES) 
+	$(CXX) $(CXX_FLAGS) -I$(INCLUDE) -L$(LIB) -fPIC $^ -shared -o $@ $(LIBRARIES)  -DNDEBUG
 
 $(PYSRCOUT)/%.cpp:
 	-mkdir $(PYSRCOUT)
