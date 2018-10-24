@@ -243,3 +243,16 @@ string to_upper(string str){
     transform(strToConvert.begin(), strToConvert.end(), strToConvert.begin(), ::toupper);
     return strToConvert;
 }
+
+template<typename T>
+inline T mod(const T& a, int n)
+{
+    T x1 = abs(a);
+    T x2 = floor(abs(a) * 1.0 / n) * n;
+    //T x3 = sign(a >= 0); <- BUG!
+    T x3 = ones(a.n_rows, a.n_cols);
+    x3.elem(find(a < 0)) = -1.0 * x3.elem(find(a < 0));
+    return (x1 - x2) * x3;
+    //return (abs(a) - floor(abs(a) * 1.0 / n) * n) * sign(a);
+    //return (a - floor(a/n)*n);
+} 
