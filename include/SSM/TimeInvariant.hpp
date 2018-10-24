@@ -104,9 +104,9 @@ namespace SSM::TimeInvariant {
     }
 
     void test_create_noised_ones(){
-        matrix2d_t m = _create_noised_ones(1, 1);
+        matrix2d_t m = _create_noised_ones(1, 1, 0.01);
         EXPECTED(abs(m(0, 0) - 1), IS_LESS_THAN, 0.1, "");
-        m = _create_noised_ones(10, 10);
+        m = _create_noised_ones(10, 10, 0.01);
         for_range(i, 0, 10){
             for_range(j, 0, 10){
                 EXPECTED(abs(m(i, j) - 1), IS_LESS_THAN, 0.18, "");
@@ -115,9 +115,9 @@ namespace SSM::TimeInvariant {
     }
 
     void test_create_noised_zeros(){
-        matrix2d_t m = _create_noised_zeros(1, 1);
+        matrix2d_t m = _create_noised_zeros(1, 1, 0.01);
         EXPECTED(abs(m(0, 0) - 0), IS_LESS_THAN, 0.18, "");
-        m = _create_noised_zeros(10, 10);
+        m = _create_noised_zeros(10, 10, 0.01);
         for_range(i, 0, 10){
             for_range(j, 0, 10){
                 EXPECTED(abs(m(i, j) - 0), IS_LESS_THAN, 0.18, "");
@@ -498,7 +498,7 @@ namespace SSM::TimeInvariant {
         }
         return y_std;
     }
-    __inline__ double_t _measure_roughness_proposed(matrix2d_t& y0, index_t M=10){
+    __inline__ double_t _measure_roughness_proposed2(matrix2d_t& y0, index_t M=10){
         /*index_t cols = _nrows(y0);//M
         matrix2d_t y = reshape(y0.head_cols(cols * M), cols, M);
         matrix2d_t ystd = standarized_signal(y);
@@ -510,13 +510,14 @@ namespace SSM::TimeInvariant {
         /////cout << "0: " << size(diff_y0) << endl;
         /////cout << "1: " <<(diff_y0) << endl;
         diff_y0.insert_cols(_ncols(diff_y0), -diff_y0.col(_ncols(diff_y0) - 1));
+        diff_y0.insert_cols(0, -diff_y0.col(0));
         //matrix2d_t last_diff_y0 = diff_y0.col(_ncols(diff_y0) - 1);
         //diff_y0 = join_cols(diff_y0, -last_diff_y0);
         /////cout << "2: " << diff_y0 << endl;
         uvec indices = find((
             diff_y0.cols(0, _ncols(diff_y0) - 2) %
             diff_y0.cols(1, _ncols(diff_y0) - 1)
-        ) < 0) + 1;
+        ) < 0);// + 1;
         /////uvec X1 = indices;
         /////matrix2d_t X2 = y0.elem(X1);
         /////cout << "1A: " << diff_y0.cols(0, _ncols(diff_y0) - 2) << endl;
@@ -531,6 +532,31 @@ namespace SSM::TimeInvariant {
         /////cout << "2E: " << accu(abs(X2)) / accu(abs(y0)) << endl;
         double_t roughness = accu(abs(y0.elem(indices))) / accu(abs(y0));
         /////cout << "3: " << roughness << endl;
+        return roughness;
+    }
+
+    
+    __inline__ double_t _measure_roughness_proposed(matrix2d_t& y0, index_t M=10){
+        double_t meanval = mean2(y0);
+        int window = 10;
+        //matrix2d_t y1(_nrows(y0), _ncols(y1));
+        //y1.cols(0, _ncols(y1) - 1) = y0.cols(0, _ncols(y1) - 1);
+        matrix2d_t y1(y0);
+        for_range(k, 0, window){
+            y1.insert_cols(0, colvec({meanval}));
+            y1.insert_cols(_ncols(y1), colvec({meanval}));
+        }
+        //cout << "A:" << size(y1) << "#" << y1 << endl;
+        y1 = cumsum(y1, 1);
+        y1 = y1 * 1.0 / window;
+        //cout << "B:" << size(y1) << "#" << y1 << endl;
+        //y1.cols(window, _ncols(y1) - 1) -= y1.cols(_ncols(y1) - 1 - window, _ncols(y1) - 1);
+        y1.cols(window, _ncols(y1) - 1) -= y1.cols(0, _ncols(y1) - 1 - window);
+        //cout << "C:" << size(y1) << "#" << y1 << endl;
+        y1 = y1.cols(window, _ncols(y1) - window - 1);
+        ///////double_t roughness = accu(abs(y1 - y0)) / (accu(abs(y0)) + 1e-100);
+        //double_t roughness = accu(abs(y1 - y0));//// / (accu(abs(y0)) + 1e-100);
+        double_t roughness = accu(pow(y1 - y0, 2)) / (accu(pow(y0, 2)) + 1e-100);
         return roughness;
     }
 
@@ -594,7 +620,7 @@ namespace SSM::TimeInvariant {
             -93, -67, -88, -4, 15, -90, -67, 74, 68, -1}
         };
         matrix2d_t X3 = X1.row(0);
-        EXPECTED(_measure_roughness_proposed(X2), IS_NEAR_EQUAL_TO, 0.695, "");
+        EXPECTED(_measure_roughness_proposed(X2), IS_NEAR_EQUAL_TO, 0.823, "");
         EXPECTED(_measure_roughness_proposed(X3), IS_NEAR_EQUAL_TO, 0.694, "");
         matrix2d_t X = X1;
         EXPECTED(_measure_roughness(X), IS_NEAR_EQUAL_TO, 0.717, "");
@@ -1397,6 +1423,10 @@ namespace SSM::TimeInvariant {
                 A_prev = A;
                 k -= 1;
             }
+            //REMOVE LATER!
+            this->smoothed_estimates.X = round(this->smoothed_estimates.X);
+            this->smoothed_estimates.X = clamp(this->smoothed_estimates.X, -4, 4);
+            //END REMOVE
             this->smoothed_estimates.Y = _predict_expected_ssm(this->H(), this->smoothed_estimates.X);
         }
 
@@ -1477,7 +1507,7 @@ namespace SSM::TimeInvariant {
         system_inestability_penalty = parameters._penalize_inestable_system(smoother.F());
         mean_squared_error_penalty = parameters._penalize_mean_squared_error(Y, smoother.Ys());
         roughness_X_penalty = parameters._penalize_roughness(smoother.Xs());
-        roughness_Y_penalty = parameters._penalize_roughness(Y);
+        roughness_Y_penalty = parameters._penalize_roughness(smoother.Ys());
     }
 
     // {{export}}
@@ -3602,7 +3632,7 @@ namespace SSM::TimeInvariant {
         *system_inestability_penalty = parameters._penalize_inestable_system(smoother.F());
         *mean_squared_error_penalty = parameters._penalize_mean_squared_error(*_Y, smoother.Ys());
         *roughness_X_penalty = parameters._penalize_roughness(smoother.Xs());
-        *roughness_Y_penalty = parameters._penalize_roughness(*_Y);
+        *roughness_Y_penalty = parameters._penalize_roughness(smoother.Ys());
 
         //
         c_del_matrix2d(_Y);
