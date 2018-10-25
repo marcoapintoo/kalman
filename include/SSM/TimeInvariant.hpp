@@ -1424,8 +1424,8 @@ namespace SSM::TimeInvariant {
                 k -= 1;
             }
             //REMOVE LATER!
-            this->smoothed_estimates.X = round(this->smoothed_estimates.X);
-            this->smoothed_estimates.X = clamp(this->smoothed_estimates.X, -4, 4);
+            //this->smoothed_estimates.X = round(this->smoothed_estimates.X);
+            //this->smoothed_estimates.X = clamp(this->smoothed_estimates.X, -4, 4);
             //END REMOVE
             this->smoothed_estimates.Y = _predict_expected_ssm(this->H(), this->smoothed_estimates.X);
         }
