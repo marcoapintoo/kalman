@@ -536,9 +536,8 @@ namespace SSM::TimeInvariant {
     }
 
     
-    __inline__ double_t _measure_roughness_proposed(matrix2d_t& y0, index_t M=10){
+    __inline__ double_t _measure_roughness_proposed(matrix2d_t& y0, index_t M=10, int window = 10){
         double_t meanval = mean2(y0);
-        int window = 10;
         //matrix2d_t y1(_nrows(y0), _ncols(y1));
         //y1.cols(0, _ncols(y1) - 1) = y0.cols(0, _ncols(y1) - 1);
         matrix2d_t y1(y0);
